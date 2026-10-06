@@ -25,7 +25,7 @@ copyFileSync(join(__dirname,'node_modules/fflate/LICENSE'),join(target,'LMS/vend
 let adminPage=readFileSync(join(target,'LMS/admin.html'),'utf8');
 for(const asset of ['admin.js','admin.css','styles.css']){const source=asset==='admin.js'?join(target,'LMS',asset):join(__dirname,asset);adminPage=adminPage.replace('/LMS/'+asset,'/LMS/'+asset+'?v='+createHash('sha256').update(readFileSync(source)).digest('hex').slice(0,12));}
 writeFileSync(join(target,'LMS/admin.html'),adminPage);
-for (const name of ['index.html','app.js','styles.css','certificate.html','certificate.js','certificate.css']) copyFileSync(join(__dirname,name),join(target,'LMS',name));
+for (const name of ['index.html','app.js','styles.css','certificate.html','certificate.js','certificate.css','receipt.html','receipt.js','receipt.css']) copyFileSync(join(__dirname,name),join(target,'LMS',name));
 // Version assets so an existing browser cannot retain old registration behavior.
 let learningPage=readFileSync(join(__dirname,'index.html'),'utf8');
 learningPage=learningPage.replace('</head>','<link rel="icon" type="image/svg+xml" href="/favicon.svg"><meta name="theme-color" content="#101b35"></head>');
@@ -37,6 +37,9 @@ writeFileSync(join(target,'LMS/index.html'),learningPage);
 writeFileSync(join(target,'LMS/register.html'),learningPage);
 const certificatePage=readFileSync(join(__dirname,'certificate.html'),'utf8').replace('</head>','<link rel="icon" type="image/svg+xml" href="/favicon.svg"><meta name="robots" content="noindex"></head>');
 writeFileSync(join(target,'LMS/certificate.html'),certificatePage);
+let receiptPage=readFileSync(join(__dirname,'receipt.html'),'utf8');
+for(const asset of ['receipt.js','receipt.css'])receiptPage=receiptPage.replace('/LMS/'+asset,'/LMS/'+asset+'?v='+createHash('sha256').update(readFileSync(join(__dirname,asset))).digest('hex').slice(0,12));
+writeFileSync(join(target,'LMS/receipt.html'),receiptPage);
 const siteVersion=createHash('sha256').update(readFileSync(join(target,'site.css'))).digest('hex').slice(0,12);
 function versionPages(dir){for(const item of readdirSync(dir,{withFileTypes:true})){const path=join(dir,item.name);if(item.isDirectory())versionPages(path);else if(item.name.endsWith('.html'))writeFileSync(path,readFileSync(path,'utf8').replace('href="/site.css"','href="/site.css?v='+siteVersion+'"'));}}
 function accountLinks(dir){for(const item of readdirSync(dir,{withFileTypes:true})){const path=join(dir,item.name);if(item.isDirectory())accountLinks(path);else if(item.name.endsWith('.html')){let html=readFileSync(path,'utf8');if(!path.startsWith(join(target,'LMS')+require('node:path').sep))html=html.replace('</head>','<script src="/LMS/account-nav.js?v='+createHash('sha256').update(readFileSync(join(__dirname,'account-nav.js'))).digest('hex').slice(0,12)+'" defer></script></head>');else if(item.name==='account.html'){for(const asset of ['account.js','styles.css'])html=html.replace('/LMS/'+asset,'/LMS/'+asset+'?v='+createHash('sha256').update(readFileSync(join(__dirname,asset))).digest('hex').slice(0,12));}writeFileSync(path,html);}}}
@@ -48,6 +51,6 @@ for(const name of ['install.js','install.css','sw.js','offline.html'])copyFileSy
 writeFileSync(join(target,'manifest.webmanifest'),JSON.stringify({name:'Advanced CPE',short_name:'Advanced CPE',description:'Practical accounting learning. Open to everyone.',id:'/LMS/',start_url:'/LMS/',scope:'/',display:'standalone',background_color:'#101b35',theme_color:'#101b35',icons:[{src:'/icon-192.png',sizes:'192x192',type:'image/png'},{src:'/icon-512.png',sizes:'512x512',type:'image/png'},{src:'/icon-maskable-512.png',sizes:'512x512',type:'image/png',purpose:'maskable'}]}));
 const pwaVersion=name=>createHash('sha256').update(readFileSync(join(__dirname,'pwa',name))).digest('hex').slice(0,12);
 const pwaHead='<link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Advanced CPE"><link rel="stylesheet" href="/install.css?v='+pwaVersion('install.css')+'"><script src="/install.js?v='+pwaVersion('install.js')+'" defer></script></head>';
-function pwaPages(dir){for(const item of readdirSync(dir,{withFileTypes:true})){const path=join(dir,item.name);if(item.isDirectory()){if(item.name!=='vendor')pwaPages(path);}else if(item.name.endsWith('.html')&&!['certificate.html','offline.html'].includes(item.name))writeFileSync(path,readFileSync(path,'utf8').replace('</head>',pwaHead));}}
+function pwaPages(dir){for(const item of readdirSync(dir,{withFileTypes:true})){const path=join(dir,item.name);if(item.isDirectory()){if(item.name!=='vendor')pwaPages(path);}else if(item.name.endsWith('.html')&&!['certificate.html','receipt.html','offline.html'].includes(item.name))writeFileSync(path,readFileSync(path,'utf8').replace('</head>',pwaHead));}}
 pwaPages(target);
 console.log('Built homepage and LMS assets in LMS/dist');

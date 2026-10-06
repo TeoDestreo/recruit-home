@@ -5,6 +5,24 @@ Pages project "recruit-home" and the D1 database advancedcpe-lms-test
 (fdbc1e0e-50c8-42dd-84aa-e9724ac7f802), a copy of production. The R2 bucket binding still
 names the production bucket advancedcpe-r2. The record below describes production.
 
+Added in the test environment (October 6, 2026), not yet in production:
+- Installable app: manifest, icons, offline page and an "Install app" button (LMS/pwa/).
+- Email confirmation: new accounts confirm their email (24-hour link) before courses,
+  coupons or checkout. Accounts that existed before migration 0015 count as confirmed.
+  Admins can mark a learner confirmed under Learners & results. Needs CF_EMAIL_API_TOKEN;
+  without it, signup still works but no confirmation email can be sent.
+- Coupon codes: created and managed in the admin console (Coupon codes tab), each with
+  its own access length, optional use limit and last redemption day. The original
+  FREE_ACCESS_CODE_HASH code still works alongside them.
+- Captions and transcripts: upload .vtt/.srt captions and/or a .txt transcript per video
+  course in the course editor. Stored in D1 (course_captions), not R2.
+- Receipts: My account lists PayPal purchases with a printable receipt page, and a
+  receipt email is sent once when a payment is confirmed (if email is configured).
+Migrations 0015-0017 must be applied to the production database before deploying these.
+Production also has 0014_unified_learning_items.sql (a learning_modules table), applied on
+October 6 from code that is not on GitHub yet; this copy of the code does not include it.
+Tests: node LMS/test-features.mjs (plus the existing test-*.mjs files).
+
 ADVANCED CPE LMS - SETUP AND DEPLOYMENT RECORD
 =============================================
 Updated: October 5, 2026

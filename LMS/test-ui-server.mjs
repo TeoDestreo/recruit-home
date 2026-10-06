@@ -2,7 +2,7 @@
 // Run after node LMS/build.cjs. Only allowlisted dist files are served.
 import {DatabaseSync} from 'node:sqlite';
 import {createServer} from 'node:http';
-import {readFileSync,existsSync,statSync,createReadStream} from 'node:fs';
+import {readFileSync,readdirSync,existsSync,statSync,createReadStream} from 'node:fs';
 import {resolve,sep,extname} from 'node:path';
 import worker from './dist/_worker.js';
 import {MemoryBucket} from './test-r2.mjs';
@@ -10,7 +10,8 @@ const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');
 for(const f of ['schema.sql','migrations/0001_auth_progress.sql','migrations/0002_playback.sql','migrations/0003_paid_access.sql','migrations/0004_checkout.sql','migrations/0005_profiles_iolta.sql','seed-courses.sql','catalog-metadata.sql','migrations/0006_topic_library.sql','migrations/0007_course_tests.sql','migrations/0008_admin_activities.sql'])db.exec(readFileSync(new URL(f,import.meta.url),'utf8'));
 db.exec(readFileSync(new URL('migrations/0009_video_sources.sql',import.meta.url),'utf8'));
 db.exec(readFileSync(new URL('migrations/0010_accounts_course_trash.sql',import.meta.url),'utf8'));
-db.exec(`INSERT INTO users(id,email,name) VALUES('ui-fixture','local-only@example.invalid','Local Test Learner');
+for(const f of readdirSync(new URL('migrations/',import.meta.url)).filter(f=>f.endsWith('.sql')&&Number(f.slice(0,4))>10).sort())db.exec(readFileSync(new URL('migrations/'+f,import.meta.url),'utf8'));
+db.exec(`INSERT INTO users(id,email,name,email_verified_at) VALUES('ui-fixture','local-only@example.invalid','Local Test Learner',unixepoch());
 INSERT INTO admins(user_id) VALUES('ui-fixture');
 INSERT INTO course_access(id,user_id,payment_reference) VALUES('local-access','ui-fixture','local-only');
 INSERT INTO enrollments(user_id,course_id) SELECT 'ui-fixture',id FROM courses WHERE asset_key IS NOT NULL AND duration_seconds>0;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync } from 'node:fs';
+import { readFileSync,readdirSync } from 'node:fs';
 import worker from './src/index.js';
 const db=new DatabaseSync(':memory:');
 db.exec('PRAGMA foreign_keys=ON');
@@ -9,6 +9,7 @@ db.exec(readFileSync(new URL('migrations/0007_course_tests.sql',import.meta.url)
 db.exec(readFileSync(new URL('migrations/0008_admin_activities.sql',import.meta.url),'utf8'));
 db.exec(readFileSync(new URL('migrations/0009_video_sources.sql',import.meta.url),'utf8'));
 db.exec(readFileSync(new URL('migrations/0010_accounts_course_trash.sql',import.meta.url),'utf8'));
+for(const f of readdirSync(new URL('migrations/',import.meta.url)).filter(f=>f.endsWith('.sql')&&Number(f.slice(0,4))>10).sort())db.exec(readFileSync(new URL('migrations/'+f,import.meta.url),'utf8'));
 const mockQuestions=Array.from({length:10},(_,i)=>({prompt:`Synthetic test question ${i+1}`,options:['Synthetic correct choice','Synthetic incorrect choice','Another incorrect choice'],correct:0}));
 db.prepare('INSERT INTO course_quizzes(course_id,version,questions_json,published) VALUES(?,1,?,1)').run('course-4',JSON.stringify(mockQuestions));
 function statement(sql,args=[]) { return {
@@ -49,6 +50,8 @@ assert.equal((await request('/auth/register',{...credentials,turnstileToken:'val
 assert.equal((await request('/auth/register',{...credentials,turnstileToken:'valid-wrong-action'})).status,400);
 assert.equal((await request('/auth/register',credentials,{Origin:'https://evil.test'})).status,403);
 let res=await request('/auth/register',credentials);assert.equal(res.status,200);cookie=res.headers.get('set-cookie').split(';')[0];
+// Email confirmation is covered by test-features.mjs; confirm it here so paid-access checks run.
+db.exec('UPDATE users SET email_verified_at=unixepoch()');
 assert.match(res.headers.get('set-cookie'),/HttpOnly/);assert.match(cookie,/^__Host-/);
 assert.equal((await request('/auth/register',{...credentials,email:'TEST@example.com'})).status,409);
 assert.equal((await request('/auth/login',{...credentials,password:'Not the correct password'})).status,401);
@@ -101,7 +104,7 @@ db.exec("UPDATE course_access SET expires_at=NULL WHERE id='paid-test'");
 const oldCookie=cookie;await request('/auth/logout',{});assert.equal((await request('/courses/course-4/video')).status,401);
 res=await request('/auth/login',credentials);assert.equal(res.status,200);cookie=res.headers.get('set-cookie').split(';')[0];
 assert.ok((await (await request('/courses')).json()).courses.find(c=>c.id==='course-4').completed_at);
-res=await request('/auth/register',{...credentials,email:'second@example.com'});cookie=res.headers.get('set-cookie').split(';')[0];
+res=await request('/auth/register',{...credentials,email:'second@example.com'});cookie=res.headers.get('set-cookie').split(';')[0];db.exec("UPDATE users SET email_verified_at=unixepoch() WHERE email='second@example.com'");
 assert.equal((await request('/certificates/'+certificate.id)).status,404);
 assert.equal((await request('/courses/course-4/certificate',{})).status,402);
 assert.equal((await (await request('/courses')).json()).courses.find(c=>c.id==='course-4').watched_seconds,0);
@@ -129,7 +132,7 @@ console.log('PASS: required profile validation, optional nonprofessional registr
 // Checkout tests use only in-memory users and a mocked PayPal server. No charges.
 const hash=async value=>Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))).toString('hex');
 async function paymentUser(id){
-  db.prepare('INSERT OR IGNORE INTO users(id,email,name) VALUES(?,?,?)').run(id,id+'@example.invalid',id);
+  db.prepare('INSERT OR IGNORE INTO users(id,email,name,email_verified_at) VALUES(?,?,?,unixepoch())').run(id,id+'@example.invalid',id);
   const token=Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex');
   db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,unixepoch()+3600)').run(await hash(token),id);
   cookie='__Host-acpe_session='+token;
@@ -140,7 +143,8 @@ assert.equal((await request('/checkout/status')).status,401);
 await paymentUser('coupon-user');
 assert.equal((await request('/checkout/status')).status,503);
 assert.equal((await request('/checkout/create',{})).status,503);
-assert.equal((await request('/checkout/coupon',{code:'fixture-free'})).status,503);
+// With no built-in code configured, an unknown code is simply invalid: administrators may still have created codes.
+assert.equal((await request('/checkout/coupon',{code:'fixture-free'})).status,400);
 env.FREE_ACCESS_CODE_HASH=await hash('fixture-free');
 assert.equal((await request('/checkout/coupon',{code:'wrong'})).status,400);
 assert.equal((await request('/checkout/coupon',{code:'fixture-free'},{Origin:'https://evil.test'})).status,403);

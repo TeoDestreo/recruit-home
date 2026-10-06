@@ -1,4 +1,5 @@
 import {accountRoute} from './account.js';
+import {emailReady,sendEmail,escapeHtml} from './email.js';
 import {isAdmin,adminRoute,activityState,requireActivity,activityPublic,learnerActivity} from './admin.js';
 const encoder = new TextEncoder();
 const json = (data, status=200, headers={}) => Response.json(data,{status,headers:{'Cache-Control':'no-store',...headers}});
@@ -28,7 +29,7 @@ async function session(request,env) {
   const token=(request.headers.get('Cookie')||'').split(';').map(s=>s.trim()).find(s=>s.startsWith(key+'='))?.slice(key.length+1);
   if(!token || !/^[a-f0-9]{64}$/.test(token)) return null;
   const hash=await digest(token);
-  const user=await env.DB.prepare('SELECT u.id,u.email,u.name FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>unixepoch()').bind(hash).first();
+  const user=await env.DB.prepare('SELECT u.id,u.email,u.name,u.email_verified_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>unixepoch()').bind(hash).first();
   return user?{...user,tokenHash:hash}:null;
 }
 async function body(request) {
@@ -67,11 +68,11 @@ async function auth(request,env,path) {
         SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM users WHERE id=?)`).bind(id,fields.firstName,fields.lastName,fields.organization,fields.jobTitle,fields.city,fields.region,fields.country,fields.designation,fields.licenseNumber,fields.licenseRegion,fields.phone,input.marketingOptIn?1:0,input.marketingOptIn?Math.floor(Date.now()/1000):null,id)
     ]);
     if(!result[0].meta.changes) fail(409,'An account already exists for this email. Please sign in.');
-    user={id,email,name};
+    user={id,email,name,email_verified_at:null};
   } else {
     const row=await env.DB.prepare('SELECT * FROM users WHERE email=? COLLATE NOCASE').bind(email).first();
     if(!await passwordMatches(password,row?.password_hash)) fail(401,'Email or password is incorrect.');
-    user={id:row.id,email:row.email,name:row.name};
+    user={id:row.id,email:row.email,name:row.name,email_verified_at:row.email_verified_at};
   }
   const token=random();
   await env.DB.batch([
@@ -79,11 +80,12 @@ async function auth(request,env,path) {
     env.DB.prepare('DELETE FROM auth_limits WHERE window_start<unixepoch()-86400'),
     env.DB.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,unixepoch()+604800)').bind(await digest(token),user.id)
   ]);
-  return json({user:{...user,admin:await isAdmin(env,user)}},200,{'Set-Cookie':cookie(request,token)});
+  const verificationSent=path.endsWith('/register')?await sendVerification(request,env,user):undefined;
+  return json({user:await publicUser(env,user),verificationSent},200,{'Set-Cookie':cookie(request,token)});
 }
 const RESET_REQUEST_MESSAGE='If an account matches that email, a password reset link will arrive shortly. The link expires in 30 minutes.';
 async function requestPasswordReset(request,env) {
-  if(!env.CF_EMAIL_API_TOKEN||!env.CF_ACCOUNT_ID)return json({error:'Password reset email is not configured yet.'},503);
+  if(!emailReady(env))return json({error:'Password reset email is not configured yet.'},503);
   const input=await body(request),email=String(input.email||'').trim().toLowerCase();
   await limit(env,'reset:ip:'+await digest(request.headers.get('CF-Connecting-IP')||'local'),20,3600);
   if(email.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return json({message:RESET_REQUEST_MESSAGE});
@@ -98,14 +100,9 @@ async function requestPasswordReset(request,env) {
   ]);
   const link=`${base}/LMS/#reset=${token}`;
   try {
-    const response=await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/email/sending/send`,{
-      method:'POST',headers:{Authorization:`Bearer ${env.CF_EMAIL_API_TOKEN}`,'Content-Type':'application/json'},signal:AbortSignal.timeout(10000),
-      body:JSON.stringify({to:user.email,from:env.PASSWORD_RESET_FROM||'noreply@advancedcpe.com',subject:'Reset your Advanced CPE password',
-        text:`We received a request to reset your Advanced CPE password. Use this link within 30 minutes:\n\n${link}\n\nIf you did not request this, you can ignore this email. Your password will not change.`,
-        html:`<p>We received a request to reset your Advanced CPE password.</p><p><a href="${link}">Choose a new password</a></p><p>This link expires in 30 minutes and can only be used once.</p><p>If you did not request this, you can ignore this email. Your password will not change.</p>`})
-    });
-    const result=await response.json().catch(()=>null);
-    if(!response.ok||!result?.success)throw Object.assign(new Error('Cloudflare email request failed'),{code:`CF_EMAIL_HTTP_${response.status}`});
+    await sendEmail(env,{to:user.email,subject:'Reset your Advanced CPE password',
+      text:`We received a request to reset your Advanced CPE password. Use this link within 30 minutes:\n\n${link}\n\nIf you did not request this, you can ignore this email. Your password will not change.`,
+      html:`<p>We received a request to reset your Advanced CPE password.</p><p><a href="${link}">Choose a new password</a></p><p>This link expires in 30 minutes and can only be used once.</p><p>If you did not request this, you can ignore this email. Your password will not change.</p>`});
   } catch(error) {
     await env.DB.prepare('DELETE FROM password_reset_tokens WHERE token_hash=?').bind(tokenHash).run();
     console.error('Password reset email could not be sent',error?.code||'EMAIL_SEND_FAILED');
@@ -121,11 +118,50 @@ async function completePasswordReset(request,env) {
   if(!userId)fail(400,'This reset link has expired or has already been used. Request a new one.');
   const passwordHashValue=await passwordHash(password);
   await env.DB.batch([
-    env.DB.prepare('UPDATE users SET password_hash=? WHERE id=?').bind(passwordHashValue,userId),
+    env.DB.prepare('UPDATE users SET password_hash=?,email_verified_at=COALESCE(email_verified_at,unixepoch()) WHERE id=?').bind(passwordHashValue,userId),
     env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(userId),
     env.DB.prepare('DELETE FROM password_reset_tokens WHERE user_id=? AND token_hash<>?').bind(userId,await digest(token))
   ]);
   return json({ok:true,message:'Your password has been changed. Please sign in with your new password.'},200,{'Set-Cookie':cookie(request,'',0)});
+}
+const publicUser=async(env,user)=>({id:user.id,name:user.name,email:user.email,admin:await isAdmin(env,user),emailVerified:!!user.email_verified_at});
+const requireVerified=user=>{if(!user.email_verified_at)fail(403,'Please confirm your email address first. Use the link we emailed you, or resend it from the notice at the top of the page.');};
+async function sendVerification(request,env,user) {
+  if(!emailReady(env))return false;
+  const token=random(),tokenHash=await digest(token),now=Math.floor(Date.now()/1000);
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM email_verification_tokens WHERE user_id=? OR expires_at<=?').bind(user.id,now),
+    env.DB.prepare('INSERT INTO email_verification_tokens(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(tokenHash,user.id,now+86400)
+  ]);
+  const link=`${new URL(request.url).origin}/LMS/#verify=${token}`;
+  try {
+    await sendEmail(env,{to:user.email,subject:'Confirm your Advanced CPE email',
+      text:`Welcome to Advanced CPE! Confirm your email address to start learning:\n\n${link}\n\nThis link expires in 24 hours. If you did not create an account, you can ignore this email.`,
+      html:`<p>Welcome to Advanced CPE!</p><p><a href="${link}">Confirm your email address</a> to start learning.</p><p>This link expires in 24 hours. If you did not create an account, you can ignore this email.</p>`});
+    return true;
+  } catch(error) {
+    await env.DB.prepare('DELETE FROM email_verification_tokens WHERE token_hash=?').bind(tokenHash).run();
+    console.error('Verification email could not be sent',error?.code||'EMAIL_SEND_FAILED');
+    return false;
+  }
+}
+async function resendVerification(request,env,user) {
+  await body(request);
+  if(user.email_verified_at)return json({ok:true,alreadyVerified:true,message:'Your email is already confirmed.'});
+  if(!emailReady(env))fail(503,'Confirmation email is not available right now. Please contact Advanced CPE.');
+  await limit(env,'verify:user:'+user.id,3,3600);
+  if(!await sendVerification(request,env,user))fail(502,'We could not send the confirmation email. Please try again later.');
+  return json({ok:true,message:`We sent a new confirmation link to ${user.email}. It expires in 24 hours.`});
+}
+async function completeVerification(request,env) {
+  const input=await body(request),token=String(input.token||'');
+  await limit(env,'verify-complete:ip:'+await digest(request.headers.get('CF-Connecting-IP')||'local'),30,3600);
+  if(!/^[a-f0-9]{64}$/.test(token))fail(400,'This confirmation link is not valid. Sign in and request a new one.');
+  const consumed=await env.DB.prepare('UPDATE email_verification_tokens SET used_at=unixepoch() WHERE token_hash=? AND used_at IS NULL AND expires_at>unixepoch() RETURNING user_id').bind(await digest(token)).all();
+  const userId=consumed.results?.[0]?.user_id;
+  if(!userId)fail(400,'This confirmation link has expired or was already used. Sign in and request a new one.');
+  await env.DB.prepare('UPDATE users SET email_verified_at=COALESCE(email_verified_at,unixepoch()) WHERE id=?').bind(userId).run();
+  return json({ok:true,message:'Thanks! Your email is confirmed.'});
 }
 export function mergeRanges(ranges,start,end) {
   const sorted=[...ranges,[start,end]].sort((a,b)=>a[0]-b[0]), merged=[];
@@ -148,6 +184,7 @@ async function verifySignup(request,env,token) {
 }
 async function requireAccess(env,user,courseId) {
   if(await isAdmin(env,user))return;
+  requireVerified(user);
   const access=await env.DB.prepare(`SELECT id FROM course_access WHERE user_id=? AND (course_id=? OR course_id IS NULL) AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>unixepoch()) LIMIT 1`).bind(user.id,courseId).first();
   if(!access) fail(402,'Paid enrollment is required to take this course.');
 }
@@ -160,15 +197,40 @@ async function redeemCoupon(request,env,user) {
   const input=await body(request);
   await limit(env,'coupon:user:'+user.id,10,600);
   await limit(env,'coupon:ip:'+await digest(request.headers.get('CF-Connecting-IP')||'local'),30,600);
-  if(!env.FREE_ACCESS_CODE_HASH) fail(503,'Coupon redemption is temporarily unavailable.');
+  requireVerified(user);
   const code=typeof input.code==='string'?input.code.trim():'';
-  if(!code||code.length>128||await digest(code)!==env.FREE_ACCESS_CODE_HASH) fail(400,'This coupon code is not valid.');
+  if(!code||code.length>128) fail(400,'This coupon code is not valid.');
+  const coupon=await env.DB.prepare('SELECT * FROM coupon_codes WHERE code=? COLLATE NOCASE').bind(code).first();
+  if(coupon) return redeemCodedCoupon(env,user,coupon);
+  if(!env.FREE_ACCESS_CODE_HASH||await digest(code)!==env.FREE_ACCESS_CODE_HASH) fail(400,'This coupon code is not valid.');
   const reference='coupon:library-2026:'+user.id;
   const existing=await env.DB.prepare('SELECT revoked_at,expires_at FROM course_access WHERE payment_reference=?').bind(reference).first();
   if(existing&&existing.revoked_at!==null) fail(403,'This coupon access was revoked. Please contact Advanced CPE.');
   if(existing&&existing.expires_at!==null&&existing.expires_at<=Math.floor(Date.now()/1000))fail(409,'This coupon was already redeemed and its one-year access has expired. Contact your instructor for a new code.');
   await env.DB.prepare('INSERT INTO course_access(id,user_id,course_id,payment_reference,granted_at,expires_at) VALUES(?,?,NULL,?,unixepoch(),unixepoch()+?) ON CONFLICT(payment_reference) DO NOTHING').bind(crypto.randomUUID(),user.id,reference,LIBRARY_ACCESS_SECONDS).run();
-  return json({ok:true,access:'library'});
+  const grant=await env.DB.prepare('SELECT expires_at FROM course_access WHERE payment_reference=?').bind(reference).first();
+  return json({ok:true,access:'library',expiresAt:grant?.expires_at??null});
+}
+// Administrator-created codes: one redemption per learner, optional use limit and end date.
+async function redeemCodedCoupon(env,user,coupon) {
+  const now=Math.floor(Date.now()/1000),reference='coupon:'+coupon.id+':'+user.id;
+  const grant=()=>env.DB.prepare('SELECT revoked_at,expires_at FROM course_access WHERE payment_reference=?').bind(reference).first();
+  if(await env.DB.prepare('SELECT 1 AS used FROM coupon_redemptions WHERE coupon_id=? AND user_id=?').bind(coupon.id,user.id).first()) {
+    const prior=await grant();
+    if(prior?.revoked_at!=null) fail(403,'This coupon access was revoked. Please contact Advanced CPE.');
+    if(!prior||(prior.expires_at!==null&&prior.expires_at<=now)) fail(409,'You already used this coupon and its access has ended. Ask your instructor for a new code.');
+    return json({ok:true,access:'library',expiresAt:prior.expires_at});
+  }
+  if(coupon.disabled_at!==null||(coupon.expires_at!==null&&coupon.expires_at<=now)) fail(400,'This coupon code is no longer active.');
+  if(await libraryAccess(env,user)) fail(409,'You already have active video library access, so this code was not used. Keep it for when your current access ends.');
+  const result=await env.DB.batch([
+    env.DB.prepare(`INSERT INTO coupon_redemptions(coupon_id,user_id) SELECT id,? FROM coupon_codes WHERE id=? AND disabled_at IS NULL AND (expires_at IS NULL OR expires_at>unixepoch())
+      AND (max_redemptions IS NULL OR (SELECT count(*) FROM coupon_redemptions WHERE coupon_id=?)<max_redemptions) ON CONFLICT DO NOTHING`).bind(user.id,coupon.id,coupon.id),
+    env.DB.prepare(`INSERT INTO course_access(id,user_id,course_id,payment_reference,granted_at,expires_at) SELECT ?,?,NULL,?,unixepoch(),unixepoch()+?
+      WHERE EXISTS(SELECT 1 FROM coupon_redemptions WHERE coupon_id=? AND user_id=?) ON CONFLICT(payment_reference) DO NOTHING`).bind(crypto.randomUUID(),user.id,reference,coupon.access_days*86400,coupon.id,user.id)
+  ]);
+  if(!result[0].meta.changes) fail(409,'This coupon has reached its limit and can no longer be used.');
+  return json({ok:true,access:'library',expiresAt:(await grant())?.expires_at??null});
 }
 async function paypalClient(env) {
   if(!paypalReady(env)) fail(503,'PayPal checkout is not configured yet. You can still redeem a coupon.');
@@ -192,6 +254,7 @@ async function checkout(request,env,user,action) {
   const input=await body(request);
   await limit(env,'checkout:'+user.id,20,600);
   if(action==='create') {
+    requireVerified(user);
     if(await libraryAccess(env,user)) fail(409,'You already have active library access.');
     const paypal=await paypalClient(env),id=crypto.randomUUID();
     await env.DB.prepare('INSERT INTO checkout_orders(id,user_id) VALUES(?,?)').bind(id,user.id).run();
@@ -219,11 +282,12 @@ async function checkout(request,env,user,action) {
   }
   const unit=order.purchase_units?.[0],captures=unit?.payments?.captures,cap=captures?.[0];
   if(order.id!==local.paypal_order_id||order.status!=='COMPLETED'||order.intent!=='CAPTURE'||order.purchase_units?.length!==1||unit.custom_id!==local.id||unit.amount?.value!==PRICE||unit.amount?.currency_code!==CURRENCY||captures?.length!==1||cap.status!=='COMPLETED'||cap.amount?.value!==PRICE||cap.amount?.currency_code!==CURRENCY||!cap.id) fail(409,'Payment is not confirmed. No access has been granted. Please retry or contact Advanced CPE.');
-  await env.DB.batch([
+  const completed=await env.DB.batch([
     env.DB.prepare("UPDATE checkout_orders SET status='COMPLETED',capture_id=?,completed_at=unixepoch() WHERE id=? AND status<>'COMPLETED'").bind(cap.id,local.id),
     env.DB.prepare('INSERT INTO course_access(id,user_id,course_id,payment_reference,granted_at,expires_at) VALUES(?,?,NULL,?,unixepoch(),unixepoch()+?) ON CONFLICT(payment_reference) DO NOTHING').bind(crypto.randomUUID(),user.id,'paypal:'+cap.id,LIBRARY_ACCESS_SECONDS)
   ]);
-  return json({ok:true,access:'library'});
+  if(completed[0].meta.changes)await emailReceipt(request,env,user,local.id);
+  return json({ok:true,access:'library',receiptId:local.id});
 }
 async function playback(request,env,user,course,action) {
   const data=await body(request);
@@ -235,7 +299,8 @@ async function playback(request,env,user,course,action) {
       env.DB.prepare('UPDATE course_progress SET playback_token=?,last_position=position_seconds,heartbeat_at=?,revision=revision+1 WHERE user_id=? AND course_id=?').bind(await digest(token),Date.now(),user.id,course.id)
     ]);
     const progress=await env.DB.prepare('SELECT position_seconds,watched_seconds FROM course_progress WHERE user_id=? AND course_id=?').bind(user.id,course.id).first();
-    return json({token,...progress,duration_seconds:course.duration_seconds,video:course.youtube_id?{type:'youtube',id:course.youtube_id}:{type:'upload'}});
+    const text=await env.DB.prepare('SELECT vtt IS NOT NULL AS captions,transcript IS NOT NULL AS transcript FROM course_captions WHERE course_id=?').bind(course.id).first();
+    return json({token,...progress,duration_seconds:course.duration_seconds,video:course.youtube_id?{type:'youtube',id:course.youtube_id}:{type:'upload'},captions:!!text?.captions,transcript:!!text?.transcript});
   }
   if(typeof data.position!=='number'||!Number.isFinite(data.position)||data.position<0||data.position>course.duration_seconds+1||typeof data.token!=='string') fail(400,'Invalid playback position.');
   const tokenHash=await digest(data.token);
@@ -313,6 +378,29 @@ async function courseTest(request,env,user,course,action){
   if(!attempt)fail(409,'The test status changed in another window. Please reopen it.');
   return json({attemptId:attempt.id,attemptNumber:attempt.attempt_number,questions:JSON.parse(attempt.questions_json).map(q=>({prompt:q.prompt,options:q.options})),status});
 }
+const RECEIPT_ITEM='One year of video library access';
+const receiptNumber=id=>'ACPE-'+id.replace(/-/g,'').slice(0,10).toUpperCase();
+async function receipts(env,user) {
+  const {results}=await env.DB.prepare("SELECT id,amount,currency,completed_at FROM checkout_orders WHERE user_id=? AND status='COMPLETED' ORDER BY completed_at DESC").bind(user.id).all();
+  return json({receipts:results.map(r=>({id:r.id,number:receiptNumber(r.id),item:RECEIPT_ITEM,amount:r.amount,currency:r.currency,paidAt:r.completed_at}))});
+}
+async function receiptDetail(env,user,id) {
+  const r=await env.DB.prepare(`SELECT o.id,o.amount,o.currency,o.completed_at,o.capture_id,o.paypal_order_id,u.name,u.email,p.organization,a.granted_at,a.expires_at
+    FROM checkout_orders o JOIN users u ON u.id=o.user_id LEFT JOIN user_profiles p ON p.user_id=o.user_id LEFT JOIN course_access a ON a.payment_reference='paypal:'||o.capture_id
+    WHERE o.id=? AND o.user_id=? AND o.status='COMPLETED'`).bind(id,user.id).first();
+  if(!r)fail(404,'Receipt not found.');
+  return json({receipt:{id:r.id,number:receiptNumber(r.id),item:RECEIPT_ITEM,amount:r.amount,currency:r.currency,paidAt:r.completed_at,paymentMethod:'PayPal',transactionId:r.capture_id,orderId:r.paypal_order_id,billedTo:{name:r.name,email:r.email,organization:r.organization||''},accessStart:r.granted_at,accessEnd:r.expires_at}});
+}
+async function emailReceipt(request,env,user,orderId) {
+  if(!emailReady(env))return;
+  const r=await env.DB.prepare('SELECT amount,currency,completed_at FROM checkout_orders WHERE id=?').bind(orderId).first();
+  const link=`${new URL(request.url).origin}/LMS/receipt.html?id=${orderId}`,number=receiptNumber(orderId),date=new Date(r.completed_at*1000).toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric',timeZone:'UTC'});
+  try {
+    await sendEmail(env,{to:user.email,subject:`Your Advanced CPE receipt ${number}`,
+      text:`Thank you for your purchase.\n\nReceipt: ${number}\nDate: ${date}\nItem: ${RECEIPT_ITEM}\nAmount paid: ${r.amount} ${r.currency} (PayPal)\n\nView or print your receipt: ${link}\n\nAccess does not renew automatically.`,
+      html:`<p>Thank you for your purchase.</p><p>Receipt: <b>${number}</b><br>Date: ${date}<br>Item: ${RECEIPT_ITEM}<br>Amount paid: ${escapeHtml(r.amount)} ${escapeHtml(r.currency)} (PayPal)</p><p><a href="${link}">View or print your receipt</a></p><p>Access does not renew automatically.</p>`});
+  } catch(error) { console.error('Receipt email could not be sent',error?.code||'EMAIL_SEND_FAILED'); }
+}
 async function video(request,env,course) {
   if(course.youtube_id)fail(409,'This course uses the embedded YouTube player.');
   const object=await env.COURSE_STORAGE.head(course.asset_key);
@@ -348,12 +436,13 @@ async function route(request,env) {
   if(!['GET','HEAD','POST'].includes(method)) fail(405,'Method not allowed.');
   if(method==='POST' && request.headers.get('Origin')!==url.origin) fail(403,'Request origin is not allowed.');
   if(path==='/api/health'&&method==='GET') { await env.DB.prepare('SELECT 1').first(); return json({ok:true}); }
-  if(path==='/api/config'&&method==='GET') return json({turnstileSiteKey:env.TURNSTILE_SITE_KEY||null,checkoutAvailable:paypalReady(env),couponAvailable:!!env.FREE_ACCESS_CODE_HASH,passwordResetAvailable:!!env.CF_EMAIL_API_TOKEN,price:PRICE,currency:CURRENCY});
+  if(path==='/api/config'&&method==='GET') return json({turnstileSiteKey:env.TURNSTILE_SITE_KEY||null,checkoutAvailable:paypalReady(env),couponAvailable:!!env.FREE_ACCESS_CODE_HASH||!!await env.DB.prepare('SELECT 1 AS active FROM coupon_codes WHERE disabled_at IS NULL AND (expires_at IS NULL OR expires_at>unixepoch()) LIMIT 1').first(),passwordResetAvailable:!!env.CF_EMAIL_API_TOKEN,price:PRICE,currency:CURRENCY});
   if(['/api/auth/register','/api/auth/login'].includes(path)&&method==='POST') return auth(request,env,path);
   if(path==='/api/auth/password-reset/request'&&method==='POST')return requestPasswordReset(request,env);
   if(path==='/api/auth/password-reset/complete'&&method==='POST')return completePasswordReset(request,env);
+  if(path==='/api/auth/verify-email'&&method==='POST')return completeVerification(request,env);
   const user=await session(request,env);
-  if(path==='/api/me'&&method==='GET') return json({user:user?{id:user.id,name:user.name,email:user.email,admin:await isAdmin(env,user)}:null});
+  if(path==='/api/me'&&method==='GET') return json({user:user?await publicUser(env,user):null});
   if(path==='/api/courses'&&method==='GET') {
     const uid=user?.id||'';
     const {results}=await env.DB.prepare(`SELECT c.id,c.title,c.description,c.category,c.level,c.duration_seconds,c.course_code,c.topic_path,
@@ -378,7 +467,11 @@ async function route(request,env) {
     await paypalClient(env);
     return json({ready:true});
   }
+  if(path==='/api/auth/verify-email/resend'&&method==='POST')return resendVerification(request,env,user);
   if(path==='/api/checkout/coupon'&&method==='POST') return redeemCoupon(request,env,user);
+  if(path==='/api/receipts'&&method==='GET') return receipts(env,user);
+  const receiptMatch=/^\/api\/receipts\/([a-f0-9-]{36})$/.exec(path);
+  if(receiptMatch&&method==='GET') return receiptDetail(env,user,receiptMatch[1]);
   if(path==='/api/checkout/create'&&method==='POST') return checkout(request,env,user,'create');
   if(path==='/api/checkout/capture'&&method==='POST') return checkout(request,env,user,'capture');
   if(path==='/api/auth/logout'&&method==='POST') { await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(user.tokenHash).run(); return json({ok:true},200,{'Set-Cookie':cookie(request,'',0)}); }
@@ -403,6 +496,16 @@ async function route(request,env) {
     const existing=await env.DB.prepare('SELECT id,learner_name,course_title,completed_at,issued_at FROM certificates WHERE user_id=? AND course_id=?').bind(user.id,issueMatch[1]).first();
     if(existing)return json({certificate:existing});
     await requireAccess(env,user,issueMatch[1]);return json({certificate:await issueCertificate(env,user,issueMatch[1])});
+  }
+  const textMatch=/^\/api\/courses\/([a-z0-9-]+)\/(captions\.vtt|transcript)$/.exec(path);
+  if(textMatch&&method==='GET') {
+    const course=await env.DB.prepare('SELECT id FROM courses WHERE id=? AND published=1').bind(textMatch[1]).first();
+    if(!course) fail(404,'Course not found.');
+    await requireAccess(env,user,course.id);
+    const row=await env.DB.prepare('SELECT vtt,transcript FROM course_captions WHERE course_id=?').bind(course.id).first();
+    if(textMatch[2]==='transcript'){if(!row?.transcript)fail(404,'This course does not have a transcript yet.');return json({transcript:row.transcript});}
+    if(!row?.vtt)fail(404,'This course does not have captions yet.');
+    return new Response(row.vtt,{headers:{'Content-Type':'text/vtt; charset=utf-8','Cache-Control':'private, no-store'}});
   }
   const match=/^\/api\/courses\/([a-z0-9-]+)\/(video|start|progress)$/.exec(path);
   if(match) {

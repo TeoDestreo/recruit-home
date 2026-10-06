@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Receipt | Advanced CPE</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="stylesheet" href="/LMS/receipt.css"><script src="/LMS/receipt.js" defer></script></head>
+<body><nav><a href="/LMS/account">← My account</a><button id="print" hidden>Print / Save as PDF</button></nav><p id="message" role="status">Loading receipt…</p>
+<main id="receipt" hidden><header><div class="brand">A+ <span>ADVANCED CPE</span></div><div class="seller">Advanced CPE<br>advancedcpe.com<br>916-500-0508</div></header>
+<h1>Receipt</h1><div class="meta"><div><span>Receipt number</span><strong id="number"></strong></div><div><span>Date paid</span><strong id="paid"></strong></div><div><span>Status</span><strong>Paid</strong></div></div>
+<div class="billed"><span>Billed to</span><strong id="billed-name"></strong><div id="billed-org"></div><div id="billed-email"></div></div>
+<table><thead><tr><th scope="col">Description</th><th scope="col">Amount</th></tr></thead><tbody><tr><td><strong id="item"></strong><div id="access-period"></div></td><td id="amount"></td></tr></tbody><tfoot><tr><th scope="row">Total paid</th><td id="total"></td></tr></tfoot></table>
+<p class="payment">Paid with <span id="method"></span> · Transaction ID <span id="transaction"></span></p>
+<small>One-time payment. Access does not renew automatically and there is no recurring charge.</small></main></body></html>

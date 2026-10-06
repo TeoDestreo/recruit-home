@@ -1,4 +1,5 @@
 import {youtubeId,checkVideoChange,videoChangeStatements} from './video-source.js';
+import {toVtt,transcriptFromVtt} from './captions.js';
 const json=(v,status=200,headers={})=>Response.json(v,{status,headers:{'Cache-Control':'no-store',...headers}});
 const fail=(status,message)=>{throw Object.assign(Error(message),{status});};
 const uuid=()=>crypto.randomUUID();
@@ -56,14 +57,14 @@ export async function adminRoute(request,env,user){
  const url=new URL(request.url),p=url.pathname.slice('/api/admin'.length),post=request.method==='POST';
  if(!['GET','POST'].includes(request.method))fail(405,'Method not allowed.');
  if(p==='/notes'&&!post)return json({text:typeof __BUILD_NOTES__==='string'?__BUILD_NOTES__:'Build the site to include the private README build notes.'});
- if(p==='/learners'&&!post){const {results}=await env.DB.prepare(`SELECT u.id,u.name,u.email,u.created_at,(SELECT count(*) FROM certificates c WHERE c.user_id=u.id) certificates,(SELECT count(*) FROM quiz_attempts q WHERE q.user_id=u.id AND q.submitted_at IS NOT NULL) tests FROM users u ORDER BY u.created_at DESC LIMIT 200`).all();return json({learners:results});}
+ if(p==='/learners'&&!post){const {results}=await env.DB.prepare(`SELECT u.id,u.name,u.email,u.created_at,u.email_verified_at,(SELECT count(*) FROM certificates c WHERE c.user_id=u.id) certificates,(SELECT count(*) FROM quiz_attempts q WHERE q.user_id=u.id AND q.submitted_at IS NOT NULL) tests FROM users u ORDER BY u.created_at DESC LIMIT 200`).all();return json({learners:results});}
  const learner=/^\/learners\/([a-z0-9-]+)$/.exec(p);
  if(learner&&!post){const {results}=await env.DB.prepare('SELECT c.course_code,c.title,q.attempt_number,q.score,q.passed,q.submitted_at FROM quiz_attempts q JOIN courses c ON c.id=q.course_id WHERE q.user_id=? AND q.submitted_at IS NOT NULL ORDER BY q.submitted_at DESC LIMIT 300').bind(learner[1]).all();return json({results});}
  if(p==='/courses'&&!post){return json({courses:(await env.DB.prepare('SELECT id,title,course_code,category,published,asset_key,youtube_id,duration_seconds,admin_revision,deleted_at,topic_path FROM courses ORDER BY category,course_code').all()).results});}
  const trash=/^\/courses\/([a-z0-9-]+)\/(trash|restore)$/.exec(p);
  if(trash&&post){const c=await courseRow(env,trash[1],true),d=await data(request);if(d.revision!==c.admin_revision)fail(409,'This course changed. Reload before continuing.');if(d.confirmCode!==c.course_code)fail(400,'Type the course code to confirm.');const restore=trash[2]==='restore';if(restore?!c.deleted_at:!!c.deleted_at)fail(409,'Course is already in that state.');const result=await env.DB.batch([env.DB.prepare('UPDATE courses SET deleted_at=?,published=0,admin_revision=admin_revision+1 WHERE id=? AND admin_revision=?').bind(restore?null:Math.floor(Date.now()/1000),c.id,d.revision),audit(env,user,restore?'course-restore':'course-trash',c.id)]);if(!result[0].meta.changes)fail(409,'Course changed; reload.');return json({ok:true});}
  const cm=/^\/courses\/([a-z0-9-]+)$/.exec(p);
- if(cm&&!post){const c=await courseRow(env,cm[1],true);const q=await env.DB.prepare('SELECT version,questions_json FROM course_quizzes WHERE course_id=?').bind(c.id).first();const activities=(await env.DB.prepare('SELECT p.id,p.title,p.main_library,p.status,p.verified_at,a.required,CASE WHEN a.package_id=p.id THEN 1 ELSE 0 END attached,EXISTS(SELECT 1 FROM activity_completions x WHERE x.user_id=? AND x.course_id=p.course_id AND x.package_id=p.id) admin_completed FROM activity_packages p LEFT JOIN course_activities a ON a.course_id=p.course_id AND a.package_id=p.id WHERE p.course_id=? ORDER BY p.created_at DESC').bind(user.id,c.id).all()).results;return json({course:c,questions:q?JSON.parse(q.questions_json):[],quizVersion:q?.version||0,activities});}
+ if(cm&&!post){const c=await courseRow(env,cm[1],true);const q=await env.DB.prepare('SELECT version,questions_json FROM course_quizzes WHERE course_id=?').bind(c.id).first();const activities=(await env.DB.prepare('SELECT p.id,p.title,p.main_library,p.status,p.verified_at,a.required,CASE WHEN a.package_id=p.id THEN 1 ELSE 0 END attached,EXISTS(SELECT 1 FROM activity_completions x WHERE x.user_id=? AND x.course_id=p.course_id AND x.package_id=p.id) admin_completed FROM activity_packages p LEFT JOIN course_activities a ON a.course_id=p.course_id AND a.package_id=p.id WHERE p.course_id=? ORDER BY p.created_at DESC').bind(user.id,c.id).all()).results;const text=await env.DB.prepare('SELECT vtt IS NOT NULL AS captions,transcript IS NOT NULL AS transcript,length(transcript) AS transcript_length,updated_at FROM course_captions WHERE course_id=?').bind(c.id).first();return json({course:c,questions:q?JSON.parse(q.questions_json):[],quizVersion:q?.version||0,activities,captions:{captions:!!text?.captions,transcript:!!text?.transcript,transcriptLength:text?.transcript_length||0,updatedAt:text?.updated_at||null}});}
  if((p==='/courses'||cm)&&post){
   const d=await data(request),existing=cm?await courseRow(env,cm[1]):null,id=existing?.id||'course-'+uuid();
   const title=str(d.title,200),description=str(d.description,2000),category=str(d.category,100),code=str(d.course_code,30),level=str(d.level||'Foundational',50);
@@ -104,6 +105,44 @@ export async function adminRoute(request,env,user){
  }
  const mark=/^\/courses\/([a-z0-9-]+)\/activities\/([a-f0-9-]+)\/completion$/.exec(p);
  if(mark&&post){const c=await courseRow(env,mark[1]),d=await data(request);if(typeof d.completed!=='boolean')fail(400,'Choose whether the activity is complete.');const attached=await env.DB.prepare('SELECT 1 AS linked FROM course_activities WHERE course_id=? AND package_id=?').bind(c.id,mark[2]).first();if(!attached)fail(404,'This activity is not attached to the course.');if(d.completed)await env.DB.prepare('INSERT INTO activity_completions(user_id,course_id,package_id) VALUES(?,?,?) ON CONFLICT(user_id,course_id,package_id) DO NOTHING').bind(user.id,c.id,mark[2]).run();else await env.DB.prepare('DELETE FROM activity_completions WHERE user_id=? AND course_id=? AND package_id=?').bind(user.id,c.id,mark[2]).run();await audit(env,user,d.completed?'admin-activity-complete':'admin-activity-uncomplete',c.id+':'+mark[2]).run();return json({completed:d.completed});}
+ const verifyLearner=/^\/learners\/([a-z0-9-]+)\/verify-email$/.exec(p);
+ if(verifyLearner&&post){await data(request);const r=await env.DB.batch([env.DB.prepare('UPDATE users SET email_verified_at=unixepoch() WHERE id=? AND email_verified_at IS NULL').bind(verifyLearner[1]),audit(env,user,'learner-verify-email',verifyLearner[1])]);return json({verified:true,changed:!!r[0].meta.changes});}
+ const cap=/^\/courses\/([a-z0-9-]+)\/captions$/.exec(p);
+ if(cap&&post){
+  // Each field: a string replaces it, null removes it, omitted leaves it unchanged.
+  const c=await courseRow(env,cap[1]),d=await data(request,4*1024*1024);if(c.topic_path)fail(400,'Captions belong to video courses, not reading guides.');
+  const row=await env.DB.prepare('SELECT vtt,transcript FROM course_captions WHERE course_id=?').bind(c.id).first();let vtt=row?.vtt??null,transcript=row?.transcript??null;
+  if(d.captions!==undefined){if(d.captions===null)vtt=null;else{if(typeof d.captions!=='string'||d.captions.length>1536*1024)fail(400,'Captions must be a WebVTT (.vtt) or SRT (.srt) file up to 1.5 MB.');vtt=toVtt(d.captions);if(!vtt)fail(400,'That file has no caption timings. Upload a .vtt or .srt file, or add the text as a transcript instead.');}}
+  if(d.transcript!==undefined){if(d.transcript===null)transcript=null;else{if(typeof d.transcript!=='string'||d.transcript.length>1024*1024)fail(400,'The transcript must be text up to 1 MB.');transcript=d.transcript.replace(/^﻿/,'').replace(/\r\n?/g,'\n').trim()||null;}}
+  if(typeof d.captions==='string'&&d.transcript===undefined&&!transcript)transcript=transcriptFromVtt(vtt);
+  if(!vtt&&!transcript)await env.DB.batch([env.DB.prepare('DELETE FROM course_captions WHERE course_id=?').bind(c.id),audit(env,user,'captions-remove',c.id)]);
+  else await env.DB.batch([env.DB.prepare('INSERT INTO course_captions(course_id,vtt,transcript,updated_at,updated_by) VALUES(?,?,?,unixepoch(),?) ON CONFLICT(course_id) DO UPDATE SET vtt=excluded.vtt,transcript=excluded.transcript,updated_at=excluded.updated_at,updated_by=excluded.updated_by').bind(c.id,vtt,transcript,user.id),audit(env,user,'captions-save',c.id)]);
+  return json({captions:!!vtt,transcript:!!transcript,transcriptLength:transcript?.length||0});
+ }
+ if(p==='/coupons'&&!post)return json({coupons:(await env.DB.prepare('SELECT c.*,(SELECT count(*) FROM coupon_redemptions r WHERE r.coupon_id=c.id) redemptions,u.name created_by_name FROM coupon_codes c LEFT JOIN users u ON u.id=c.created_by ORDER BY c.created_at DESC,c.code').all()).results});
+ const couponLimits=(d,currentExpiry)=>{
+  const label=typeof d.label==='string'?d.label.trim():'';if(label.length>120)fail(400,'Keep the label under 120 characters.');
+  if(d.maxRedemptions!==null&&(!Number.isInteger(d.maxRedemptions)||d.maxRedemptions<1||d.maxRedemptions>1000000))fail(400,'Use limit must be blank (unlimited) or a whole number from 1 to 1,000,000.');
+  if(d.expiresAt!==null&&d.expiresAt!==currentExpiry&&(!Number.isInteger(d.expiresAt)||d.expiresAt<=Math.floor(Date.now()/1000)))fail(400,'The last day to redeem must be in the future, or left blank.');
+  return {label,max:d.maxRedemptions,expires:d.expiresAt};
+ };
+ if(p==='/coupons'&&post){
+  const d=await data(request),{label,max,expires}=couponLimits(d);
+  if(!Number.isInteger(d.accessDays)||d.accessDays<1||d.accessDays>3650)fail(400,'Access length must be 1 to 3,650 days.');
+  let code=typeof d.code==='string'?d.code.trim():'';
+  if(!code){const alphabet='ABCDEFGHJKMNPQRSTUVWXYZ23456789',pick=n=>Array.from(crypto.getRandomValues(new Uint8Array(n)),b=>alphabet[b%alphabet.length]).join('');code='ACPE-'+pick(4)+'-'+pick(4);}
+  if(!/^[A-Za-z0-9-]{4,40}$/.test(code))fail(400,'Codes use 4–40 letters, numbers or hyphens.');
+  if(env.FREE_ACCESS_CODE_HASH&&await sha(code)===env.FREE_ACCESS_CODE_HASH)fail(409,'That code is already the site\'s built-in coupon. Choose a different code.');
+  if(await env.DB.prepare('SELECT id FROM coupon_codes WHERE code=? COLLATE NOCASE').bind(code).first())fail(409,'That code already exists.');
+  const id=uuid();await env.DB.batch([env.DB.prepare('INSERT INTO coupon_codes(id,code,label,access_days,max_redemptions,expires_at,created_by) VALUES(?,?,?,?,?,?,?)').bind(id,code,label,d.accessDays,max,expires,user.id),audit(env,user,'coupon-create',id)]);
+  return json({id,code});
+ }
+ const coupon=/^\/coupons\/([a-f0-9-]{36})(\/redemptions)?$/.exec(p);
+ if(coupon){
+  const row=await env.DB.prepare('SELECT * FROM coupon_codes WHERE id=?').bind(coupon[1]).first();if(!row)fail(404,'Coupon not found.');
+  if(coupon[2]&&!post)return json({redemptions:(await env.DB.prepare("SELECT u.name,u.email,r.redeemed_at,a.expires_at,a.revoked_at FROM coupon_redemptions r JOIN users u ON u.id=r.user_id LEFT JOIN course_access a ON a.payment_reference='coupon:'||r.coupon_id||':'||r.user_id WHERE r.coupon_id=? ORDER BY r.redeemed_at DESC LIMIT 500").bind(row.id).all()).results});
+  if(!coupon[2]&&post){const d=await data(request),{label,max,expires}=couponLimits(d,row.expires_at);if(typeof d.disabled!=='boolean')fail(400,'Choose whether the code is active.');await env.DB.batch([env.DB.prepare('UPDATE coupon_codes SET label=?,max_redemptions=?,expires_at=?,disabled_at=CASE WHEN ? THEN COALESCE(disabled_at,unixepoch()) ELSE NULL END WHERE id=?').bind(label,max,expires,d.disabled?1:0,row.id),audit(env,user,d.disabled?'coupon-disable':'coupon-update',row.id)]);return json({ok:true});}
+ }
  fail(404,'Admin endpoint not found.');
 }
 async function validatePackage(env,id){

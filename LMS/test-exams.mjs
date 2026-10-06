@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {readFileSync} from 'node:fs';
+import {readFileSync,readdirSync} from 'node:fs';
 import worker from './src/index.js';
 const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');
 for(const f of ['schema.sql','migrations/0001_auth_progress.sql','migrations/0002_playback.sql','migrations/0003_paid_access.sql','migrations/0004_checkout.sql','migrations/0005_profiles_iolta.sql','seed-courses.sql','catalog-metadata.sql','migrations/0006_topic_library.sql'])db.exec(readFileSync(new URL(f,import.meta.url),'utf8'));
@@ -12,6 +12,7 @@ db.exec(readFileSync(new URL('migrations/0007_course_tests.sql',import.meta.url)
 db.exec(readFileSync(new URL('migrations/0008_admin_activities.sql',import.meta.url),'utf8'));
 db.exec(readFileSync(new URL('migrations/0009_video_sources.sql',import.meta.url),'utf8'));
 db.exec(readFileSync(new URL('migrations/0010_accounts_course_trash.sql',import.meta.url),'utf8'));
+for(const f of readdirSync(new URL('migrations/',import.meta.url)).filter(f=>f.endsWith('.sql')&&Number(f.slice(0,4))>10).sort())db.exec(readFileSync(new URL('migrations/'+f,import.meta.url),'utf8'));
 assert.ok(db.prepare("SELECT completed_at FROM enrollments WHERE course_id='course-4'").get().completed_at);
 assert.equal(db.prepare("SELECT completed_at FROM enrollments WHERE course_id='course-5'").get().completed_at,null);
 const questions=Array.from({length:10},(_,i)=>({prompt:`Fixture concept ${i+1}?`,options:[`Correct fixture ${i}`,`Wrong fixture ${i}`,`Another wrong fixture ${i}`],correct:0}));
@@ -20,7 +21,7 @@ function statement(sql,args=[]){return {bind(...values){return statement(sql,val
 const env={DB:{prepare:statement,async batch(items){db.exec('BEGIN');try{const results=[];for(const item of items)results.push(await item.run());db.exec('COMMIT');return results;}catch(e){db.exec('ROLLBACK');throw e;}}},ASSETS:{fetch(){return new Response('asset');}}};
 const hash=async v=>Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v))).toString('hex');
 let cookie='';
-async function login(id){db.prepare('INSERT OR IGNORE INTO users(id,email,name) VALUES(?,?,?)').run(id,id+'@example.invalid',id);const token=crypto.randomUUID().replaceAll('-','').repeat(2);db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,unixepoch()+3600)').run(await hash(token),id);cookie='__Host-acpe_session='+token;}
+async function login(id){db.prepare('INSERT OR IGNORE INTO users(id,email,name,email_verified_at) VALUES(?,?,?,unixepoch())').run(id,id+'@example.invalid',id);const token=crypto.randomUUID().replaceAll('-','').repeat(2);db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,unixepoch()+3600)').run(await hash(token),id);cookie='__Host-acpe_session='+token;}
 async function req(path,data,headers={}){return worker.fetch(new Request('https://lms.test/api'+path,{method:data===undefined?'GET':'POST',headers:{Origin:'https://lms.test',Cookie:cookie,...headers,...(data!==undefined?{'Content-Type':'application/json'}:{})},...(data!==undefined?{body:JSON.stringify(data)}:{})}),env);}
 async function json(path,data){const r=await req(path,data);assert.equal(r.status,200,await r.clone().text());return r.json();}
 function grant(id){db.prepare('INSERT INTO course_access(id,user_id,payment_reference) VALUES(?,?,?)').run(id,id,'fixture-'+id);}

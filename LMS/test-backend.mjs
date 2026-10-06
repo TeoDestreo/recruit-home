@@ -1,0 +1,214 @@
+import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'node:fs';
+import worker from './src/index.js';
+const db=new DatabaseSync(':memory:');
+db.exec('PRAGMA foreign_keys=ON');
+for(const file of ['schema.sql','migrations/0001_auth_progress.sql','migrations/0002_playback.sql','migrations/0003_paid_access.sql','migrations/0004_checkout.sql','migrations/0005_profiles_iolta.sql','seed-courses.sql','catalog-metadata.sql','migrations/0006_topic_library.sql']) db.exec(readFileSync(new URL(file,import.meta.url),'utf8'));
+db.exec(readFileSync(new URL('migrations/0007_course_tests.sql',import.meta.url),'utf8'));
+db.exec(readFileSync(new URL('migrations/0008_admin_activities.sql',import.meta.url),'utf8'));
+db.exec(readFileSync(new URL('migrations/0009_video_sources.sql',import.meta.url),'utf8'));
+db.exec(readFileSync(new URL('migrations/0010_accounts_course_trash.sql',import.meta.url),'utf8'));
+const mockQuestions=Array.from({length:10},(_,i)=>({prompt:`Synthetic test question ${i+1}`,options:['Synthetic correct choice','Synthetic incorrect choice','Another incorrect choice'],correct:0}));
+db.prepare('INSERT INTO course_quizzes(course_id,version,questions_json,published) VALUES(?,1,?,1)').run('course-4',JSON.stringify(mockQuestions));
+function statement(sql,args=[]) { return {
+  bind(...values){return statement(sql,values);},
+  async first(){return db.prepare(sql).get(...args)||null;},
+  async all(){return {results:db.prepare(sql).all(...args)};},
+  async run(){const r=db.prepare(sql).run(...args);return {meta:{changes:r.changes}};}
+}; }
+const bytes=new Uint8Array(100).map((_,i)=>i);
+const env={DB:{prepare:statement,async batch(statements){db.exec('BEGIN');try{const result=[];for(const s of statements) result.push(await s.run());db.exec('COMMIT');return result;}catch(e){db.exec('ROLLBACK');throw e;}}},COURSE_STORAGE:{async head(){return {size:100,httpEtag:'"test"'};},async get(key,{range}){return {body:bytes.slice(range.offset,range.offset+range.length)};}},ASSETS:{async fetch(){return new Response('asset');}}};
+let cookie='';
+env.TURNSTILE_SECRET='test-only-secret';env.TURNSTILE_SITE_KEY='test-site-key';
+const usedTokens=new Set();
+globalThis.fetch=async(url,options)=>{
+  assert.equal(url,'https://challenges.cloudflare.com/turnstile/v0/siteverify');
+  const input=JSON.parse(options.body),valid=input.secret==='test-only-secret'&&input.response.startsWith('valid-')&&!usedTokens.has(input.response);
+  usedTokens.add(input.response);
+  return Response.json({success:valid,hostname:input.response==='valid-wrong-host'?'wrong.test':'lms.test',action:input.response==='valid-wrong-action'?'other':'signup'});
+};
+async function request(path,data,extra={}) {
+  if(data?.turnstileToken==='valid')data={...data,turnstileToken:'valid-'+crypto.randomUUID()};
+  const headers={Origin:'https://lms.test',Cookie:cookie,...(data!==undefined?{'Content-Type':'application/json'}:{}),...extra};
+  return worker.fetch(new Request('https://lms.test/api'+path,{method:data===undefined?'GET':'POST',headers,...(data!==undefined?{body:JSON.stringify(data)}:{})}),env);
+}
+assert.equal((await request('/courses')).status,200);
+const publicCourses=(await (await request('/courses')).json()).courses;
+assert.equal(publicCourses.length,28);assert.equal(publicCourses.filter(c=>!c.available).length,15);
+assert.equal(new Set(publicCourses.map(c=>c.course_code)).size,28);
+assert.ok(publicCourses.filter(c=>!c.available).every(c=>c.topic_path.startsWith('/topics/')));
+assert.ok(publicCourses.every(c=>!c.has_access&&!c.watched_seconds&&!('asset_key' in c)));
+assert.deepEqual(publicCourses.map(c=>c.category),publicCourses.map(c=>c.category).sort((a,b)=>a.localeCompare(b)));
+assert.equal((await request('/courses/course-4/video')).status,401);
+const credentials={email:'test@example.com',firstName:'Test',lastName:'Learner',country:'United States',password:'Test123!',turnstileToken:'valid'};
+for(const password of ['Short7!', 'a'.repeat(129)])for(const action of ['register','login'])assert.equal((await request('/auth/'+action,{...credentials,password})).status,400);
+assert.equal((await request('/auth/register',{...credentials,turnstileToken:''})).status,400);
+assert.equal((await request('/auth/register',{...credentials,turnstileToken:'invalid'})).status,400);
+assert.equal((await request('/auth/register',{...credentials,turnstileToken:'valid-wrong-host'})).status,400);
+assert.equal((await request('/auth/register',{...credentials,turnstileToken:'valid-wrong-action'})).status,400);
+assert.equal((await request('/auth/register',credentials,{Origin:'https://evil.test'})).status,403);
+let res=await request('/auth/register',credentials);assert.equal(res.status,200);cookie=res.headers.get('set-cookie').split(';')[0];
+assert.match(res.headers.get('set-cookie'),/HttpOnly/);assert.match(cookie,/^__Host-/);
+assert.equal((await request('/auth/register',{...credentials,email:'TEST@example.com'})).status,409);
+assert.equal((await request('/auth/login',{...credentials,password:'Not the correct password'})).status,401);
+assert.equal((await (await request('/courses')).json()).courses.length,28);
+assert.ok(!db.prepare('SELECT password_hash FROM users').get().password_hash.includes(credentials.password));
+assert.equal((await request('/courses/course-4/video')).status,402);
+assert.equal((await request('/courses/course-4/start',{})).status,402);
+assert.equal((await request('/courses/course-4/progress',{token:'fake',position:0,playing:true})).status,402);
+assert.equal((await request('/courses/course-4/certificate',{})).status,402);
+assert.equal((await request('/courses/course-1/start',{})).status,409);
+db.prepare("INSERT INTO course_access(id,user_id,course_id,payment_reference) SELECT 'paid-test',id,'course-4','test-payment-1' FROM users WHERE email='test@example.com'").run();
+assert.equal((await request('/courses/course-5/video')).status,402);
+const video=await request('/courses/course-4/video',undefined,{Range:'bytes=10-19'});
+assert.equal(video.status,206);assert.equal(video.headers.get('content-range'),'bytes 10-19/100');assert.equal((await video.arrayBuffer()).byteLength,10);
+assert.equal((await request('/courses/course-4/video',undefined,{Range:'bytes=200-300'})).status,416);
+assert.equal((await request('/complete',{userId:'x',courseId:'course-4'})).status,404);
+db.exec("UPDATE courses SET duration_seconds=100 WHERE id='course-4'");
+let playback=await (await request('/courses/course-4/start',{})).json();
+assert.equal((await request('/courses/course-4/certificate',{})).status,403);
+const uid=db.prepare('SELECT id FROM users').get().id;
+let result=await (await request('/courses/course-4/progress',{token:playback.token,position:100,playing:true})).json();assert.equal(result.watched_seconds,0);assert.equal(result.completed_at,null);
+await request('/courses/course-4/progress',{token:playback.token,position:0,playing:false});
+for(const position of [20,40,60,80,96]){
+  db.prepare('UPDATE course_progress SET heartbeat_at=? WHERE user_id=?').run(Date.now()-20000,uid);
+  result=await (await request('/courses/course-4/progress',{token:playback.token,position,playing:true})).json();
+}
+assert.equal(result.completed_at,null);assert.equal(result.watched_seconds,96);
+assert.equal((await request('/courses/course-4/certificate',{})).status,403);
+const exam=await (await request('/courses/course-4/test/start',{})).json();
+const snapshot=JSON.parse(db.prepare('SELECT questions_json FROM quiz_attempts WHERE id=?').get(exam.attemptId).questions_json);
+const graded=await (await request('/courses/course-4/test/submit',{attemptId:exam.attemptId,answers:snapshot.map((q,i)=>i<8?q.correct:(q.correct+1)%q.options.length)})).json();
+assert.equal(graded.score,80);assert.equal(graded.passed,true);
+const certificate=(await (await request('/courses/course-4/certificate',{})).json()).certificate;
+assert.equal(certificate.learner_name,'Test Learner');
+assert.equal(certificate.course_title,'AP Basics Bills, Expenses, & Receipts');
+assert.equal((await (await request('/courses/course-4/certificate',{})).json()).certificate.id,certificate.id);
+assert.equal(db.prepare('SELECT COUNT(*) AS n FROM certificates').get().n,1);
+db.exec("UPDATE users SET name='Changed name' WHERE email='test@example.com'");
+assert.equal((await (await request('/certificates/'+certificate.id)).json()).certificate.learner_name,'Test Learner');
+await request('/courses/course-4/progress',{token:playback.token,position:0,playing:false});
+db.prepare('UPDATE course_progress SET heartbeat_at=? WHERE user_id=?').run(Date.now()-20000,uid);
+result=await (await request('/courses/course-4/progress',{token:playback.token,position:20,playing:true})).json();assert.equal(result.watched_seconds,96);
+assert.equal((await request('/courses/course-4/progress',{token:'wrong',position:30,playing:true})).status,409);
+db.exec("UPDATE course_access SET revoked_at=unixepoch() WHERE id='paid-test'");
+assert.equal((await request('/courses/course-4/video')).status,402);
+assert.equal((await (await request('/courses/course-4/certificate',{})).json()).certificate.id,certificate.id);
+db.exec("UPDATE course_access SET revoked_at=NULL,granted_at=unixepoch()-100,expires_at=unixepoch()-1 WHERE id='paid-test'");
+assert.equal((await request('/courses/course-4/video')).status,402);
+db.exec("UPDATE course_access SET expires_at=NULL WHERE id='paid-test'");
+const oldCookie=cookie;await request('/auth/logout',{});assert.equal((await request('/courses/course-4/video')).status,401);
+res=await request('/auth/login',credentials);assert.equal(res.status,200);cookie=res.headers.get('set-cookie').split(';')[0];
+assert.ok((await (await request('/courses')).json()).courses.find(c=>c.id==='course-4').completed_at);
+res=await request('/auth/register',{...credentials,email:'second@example.com'});cookie=res.headers.get('set-cookie').split(';')[0];
+assert.equal((await request('/certificates/'+certificate.id)).status,404);
+assert.equal((await request('/courses/course-4/certificate',{})).status,402);
+assert.equal((await (await request('/courses')).json()).courses.find(c=>c.id==='course-4').watched_seconds,0);
+db.prepare("INSERT INTO course_access(id,user_id,course_id,payment_reference) SELECT 'paid-library',id,NULL,'test-payment-2' FROM users WHERE email='second@example.com'").run();
+assert.equal((await request('/courses/course-5/video')).status,200);
+assert.equal((await request('/courses/course-4/progress',{token:playback.token,position:30,playing:true})).status,409);
+db.exec('UPDATE sessions SET expires_at=created_at+1,created_at=created_at-10');
+// Explicitly set an expired, structurally valid session.
+db.exec('UPDATE sessions SET created_at=unixepoch()-100, expires_at=unixepoch()-1');
+assert.equal((await request('/courses/course-4/video')).status,401);
+for(let i=0;i<11;i++)res=await request('/auth/login',{email:'rate@example.com',password:'An incorrect test password'});
+assert.equal(res.status,429);
+db.exec('DELETE FROM auth_limits');
+assert.equal((await request('/auth/register',{...credentials,email:'profile@example.invalid',country:''})).status,400);
+assert.equal((await request('/auth/register',{...credentials,email:'profile@example.invalid',phone:'x'.repeat(41)})).status,400);
+assert.equal(db.prepare("SELECT count(*) n FROM users WHERE email='profile@example.invalid'").get().n,0);
+res=await request('/auth/register',{...credentials,email:'profile@example.invalid',organization:'Example nonprofit',jobTitle:'Volunteer',city:'Sacramento',region:'CA',phone:'916-555-0100',marketingOptIn:true});
+assert.equal(res.status,200);cookie=res.headers.get('set-cookie').split(';')[0];
+const profile=db.prepare("SELECT p.* FROM user_profiles p JOIN users u ON u.id=p.user_id WHERE u.email='profile@example.invalid'").get();
+assert.equal(profile.organization,'Example nonprofit');assert.equal(profile.marketing_opt_in,1);assert.ok(profile.marketing_consent_at);assert.equal(profile.license_number,'');
+assert.equal(db.prepare("SELECT p.marketing_opt_in FROM user_profiles p JOIN users u ON u.id=p.user_id WHERE u.email='test@example.com'").get().marketing_opt_in,0);
+assert.equal((await request('/courses/course-17/start',{})).status,409);
+assert.ok(!JSON.stringify(await (await request('/courses')).json()).includes('Example nonprofit'));
+console.log('PASS: required profile validation, optional nonprofessional registration, consent persistence, private profile fields, and IOLTA coming-soon gate.');
+// Checkout tests use only in-memory users and a mocked PayPal server. No charges.
+const hash=async value=>Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))).toString('hex');
+async function paymentUser(id){
+  db.prepare('INSERT OR IGNORE INTO users(id,email,name) VALUES(?,?,?)').run(id,id+'@example.invalid',id);
+  const token=Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex');
+  db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,unixepoch()+3600)').run(await hash(token),id);
+  cookie='__Host-acpe_session='+token;
+}
+cookie='';
+for(const path of ['/checkout/coupon','/checkout/create','/checkout/capture'])assert.equal((await request(path,{})).status,401);
+assert.equal((await request('/checkout/status')).status,401);
+await paymentUser('coupon-user');
+assert.equal((await request('/checkout/status')).status,503);
+assert.equal((await request('/checkout/create',{})).status,503);
+assert.equal((await request('/checkout/coupon',{code:'fixture-free'})).status,503);
+env.FREE_ACCESS_CODE_HASH=await hash('fixture-free');
+assert.equal((await request('/checkout/coupon',{code:'wrong'})).status,400);
+assert.equal((await request('/checkout/coupon',{code:'fixture-free'},{Origin:'https://evil.test'})).status,403);
+assert.equal((await request('/checkout/coupon',{code:' fixture-free '})).status,200);
+assert.equal((await request('/checkout/coupon',{code:'fixture-free'})).status,200);
+assert.equal(db.prepare("SELECT count(*) n FROM course_access WHERE user_id='coupon-user'").get().n,1);
+assert.ok((await (await request('/courses')).json()).courses.every(c=>c.has_access));
+assert.equal((await request('/checkout/create',{})).status,409);
+db.exec("UPDATE course_access SET revoked_at=unixepoch() WHERE user_id='coupon-user'");
+assert.equal((await request('/checkout/coupon',{code:'fixture-free'})).status,403);
+assert.equal((await request('/courses/course-4/video')).status,402);
+for(let i=0;i<11;i++)res=await request('/checkout/coupon',{code:'wrong'});
+assert.equal(res.status,429);
+env.PAYPAL_CLIENT_ID='mock-id';env.PAYPAL_CLIENT_SECRET='mock-secret';env.PAYPAL_ENV='sandbox';
+let remoteOrder, captureCalls=0, paymentState='APPROVED', badAmount=false, lostResponse=false, badCustom=false;
+globalThis.fetch=async(url,options)=>{
+  assert.ok(url.startsWith('https://api-m.sandbox.paypal.com/'));
+  if(url.endsWith('/v1/oauth2/token'))return Response.json({access_token:'mock-token'});
+  assert.equal(options.headers.Authorization,'Bearer mock-token');
+  if(url.endsWith('/v2/checkout/orders')){
+    const payload=JSON.parse(options.body);
+    assert.equal(payload.purchase_units[0].amount.value,'100.00');assert.equal(payload.purchase_units[0].amount.currency_code,'USD');
+    assert.equal(payload.payment_source.paypal.experience_context.return_url,'https://lms.test/LMS/?checkout=return');
+    remoteOrder={id:'MOCKORDER123456789',intent:'CAPTURE',purchase_units:payload.purchase_units};
+    return Response.json({...remoteOrder,links:[{rel:'payer-action',href:'https://www.sandbox.paypal.com/checkoutnow?token='+remoteOrder.id}]});
+  }
+  if(url.endsWith('/capture')){
+    captureCalls++;assert.equal(options.headers['PayPal-Request-Id'],remoteOrder.purchase_units[0].custom_id+'-cap');paymentState='COMPLETED';
+    if(lostResponse)throw Error('Response lost after capture');
+  }
+  const data=structuredClone(remoteOrder);data.status=paymentState;
+  if(badCustom)data.purchase_units[0].custom_id='someone-else';
+  if(paymentState==='COMPLETED')data.purchase_units[0].payments={captures:[{id:'CAPTURE123456789',status:'COMPLETED',amount:{value:badAmount?'1.00':'100.00',currency_code:'USD'}}]};
+  return Response.json(data);
+};
+await paymentUser('paypal-user');
+assert.equal((await request('/checkout/status')).status,200);
+for(let i=0;i<5;i++)res=await request('/checkout/status');
+assert.equal(res.status,429);
+res=await request('/checkout/create',{amount:'0.01',currency:'EUR'});assert.equal(res.status,200);
+const {orderId}=await res.json();const ownerCookie=cookie;
+await paymentUser('other-buyer');
+assert.equal((await request('/checkout/capture',{orderId})).status,404);
+cookie=ownerCookie;paymentState='CREATED';
+assert.equal((await request('/checkout/capture',{orderId})).status,409);
+assert.equal((await request('/courses/course-4/video')).status,402);
+paymentState='APPROVED';lostResponse=true;
+assert.equal((await request('/checkout/capture',{orderId})).status,502);
+assert.equal(captureCalls,1);
+lostResponse=false;badAmount=true;
+assert.equal((await request('/checkout/capture',{orderId})).status,409);
+badAmount=false;badCustom=true;
+assert.equal((await request('/checkout/capture',{orderId})).status,409);
+badCustom=false;
+assert.equal((await request('/checkout/capture',{orderId})).status,200);
+assert.equal((await request('/checkout/capture',{orderId})).status,200);
+assert.equal(captureCalls,1);
+assert.equal(db.prepare("SELECT count(*) n FROM course_access WHERE user_id='paypal-user'").get().n,1);
+assert.equal((await request('/courses/course-5/video')).status,200);
+assert.equal((await request('/checkout/create',{})).status,409);
+db.exec("UPDATE course_access SET revoked_at=unixepoch() WHERE user_id='paypal-user'");
+assert.equal((await (await request('/checkout/capture',{orderId})).json()).access,null);
+assert.equal((await request('/courses/course-5/video')).status,402);
+const settings=await (await request('/config')).json();
+assert.equal(settings.price,'100.00');assert.equal(settings.checkoutAvailable,true);assert.equal(settings.couponAvailable,true);
+assert.ok(!JSON.stringify(settings).includes('fixture-free'));
+console.log('PASS: coupon validation, throttling, idempotency and revocation; PayPal owner/amount verification, server pricing, capture retry recovery, no duplicate grants, and fail-closed configuration.');
+db.close();
+console.log('PASS: registration, passwords, CSRF, sessions, logout/expiry, catalog, isolation, ranged video, seek rejection, deduplicated watch coverage, completion, and login throttling.');
+console.log('PASS: certificate test gate, issuance after passing, uniqueness, snapshots, and ownership.');
+console.log('PASS: public categorized catalog, coming-soon records, Turnstile rejection, paid course/library access, and revoked/expired access.');

@@ -1,0 +1,11 @@
+CREATE TABLE admins(user_id TEXT PRIMARY KEY REFERENCES users(id), granted_at INTEGER NOT NULL DEFAULT(unixepoch()));
+ALTER TABLE courses ADD COLUMN admin_revision INTEGER NOT NULL DEFAULT 0;
+CREATE UNIQUE INDEX courses_code_unique ON courses(course_code) WHERE course_code IS NOT NULL;
+CREATE TABLE admin_audit(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),action TEXT NOT NULL,target TEXT NOT NULL,created_at INTEGER NOT NULL DEFAULT(unixepoch()));
+CREATE TABLE media_uploads(id TEXT PRIMARY KEY,course_id TEXT NOT NULL REFERENCES courses(id),user_id TEXT NOT NULL REFERENCES users(id),r2_key TEXT NOT NULL,upload_id TEXT NOT NULL,size INTEGER NOT NULL,duration REAL NOT NULL,status TEXT NOT NULL DEFAULT 'uploading',created_at INTEGER NOT NULL DEFAULT(unixepoch()));
+CREATE TABLE media_parts(upload_id TEXT NOT NULL REFERENCES media_uploads(id),part_number INTEGER NOT NULL,etag TEXT NOT NULL,size INTEGER NOT NULL,PRIMARY KEY(upload_id,part_number));
+CREATE TABLE activity_packages(id TEXT PRIMARY KEY,course_id TEXT NOT NULL REFERENCES courses(id),user_id TEXT NOT NULL REFERENCES users(id),title TEXT NOT NULL,main_library TEXT,status TEXT NOT NULL DEFAULT 'uploading',verified_at INTEGER,created_at INTEGER NOT NULL DEFAULT(unixepoch()));
+CREATE TABLE activity_files(package_id TEXT NOT NULL REFERENCES activity_packages(id),path TEXT NOT NULL,size INTEGER NOT NULL,sha256 TEXT NOT NULL,uploaded INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(package_id,path));
+CREATE TABLE course_activities(course_id TEXT PRIMARY KEY REFERENCES courses(id),package_id TEXT NOT NULL REFERENCES activity_packages(id),required INTEGER NOT NULL DEFAULT 0 CHECK(required IN(0,1)));
+CREATE TABLE activity_launches(token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),course_id TEXT NOT NULL REFERENCES courses(id),package_id TEXT NOT NULL REFERENCES activity_packages(id),preview INTEGER NOT NULL DEFAULT 0,expires_at INTEGER NOT NULL,created_at INTEGER NOT NULL DEFAULT(unixepoch()));
+CREATE TABLE activity_completions(user_id TEXT NOT NULL REFERENCES users(id),course_id TEXT NOT NULL REFERENCES courses(id),package_id TEXT NOT NULL REFERENCES activity_packages(id),completed_at INTEGER NOT NULL DEFAULT(unixepoch()),PRIMARY KEY(user_id,course_id,package_id));

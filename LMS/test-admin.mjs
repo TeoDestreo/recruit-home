@@ -1,0 +1,118 @@
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {readFileSync,readdirSync} from 'node:fs';
+import worker from './src/index.js';
+import {MemoryBucket} from './test-r2.mjs';
+const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');db.exec(readFileSync(new URL('schema.sql',import.meta.url),'utf8'));
+for(const f of readdirSync(new URL('migrations/',import.meta.url)).filter(f=>f.endsWith('.sql')).sort()){if(f==='0006_topic_library.sql'){db.exec(readFileSync(new URL('seed-courses.sql',import.meta.url),'utf8'));db.exec(readFileSync(new URL('catalog-metadata.sql',import.meta.url),'utf8'));}db.exec(readFileSync(new URL('migrations/'+f,import.meta.url),'utf8'));}
+function statement(sql,args=[]){return {bind(...a){return statement(sql,a);},async first(){return db.prepare(sql).get(...args)||null;},async all(){return {results:db.prepare(sql).all(...args)};},async run(){return {meta:{changes:db.prepare(sql).run(...args).changes}};}};}
+const bucket=new MemoryBucket(),env={COURSE_STORAGE:bucket,DB:{prepare:statement,async batch(items){db.exec('BEGIN');try{const r=[];for(const s of items)r.push(await s.run());db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}},ASSETS:{fetch:async()=>new Response('admin shell')}};
+const hash=async v=>Buffer.from(await crypto.subtle.digest('SHA-256',typeof v==='string'?new TextEncoder().encode(v):v)).toString('hex');
+let cookie='';async function login(id,admin=false){db.prepare('INSERT OR IGNORE INTO users(id,email,name) VALUES(?,?,?)').run(id,id+'@example.invalid',id);if(admin)db.prepare('INSERT OR IGNORE INTO admins(user_id) VALUES(?)').run(id);const t=crypto.randomUUID().replaceAll('-','').repeat(2);db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,unixepoch()+3600)').run(await hash(t),id);cookie='__Host-acpe_session='+t;return cookie;}
+async function req(path,data,headers={}){const binary=data instanceof Uint8Array;return worker.fetch(new Request('https://lms.test'+path,{method:data===undefined?'GET':'POST',headers:{Origin:'https://lms.test',Cookie:cookie,...(data===undefined?{}:{'Content-Type':binary?'application/octet-stream':'application/json'}),...(binary?{'Content-Length':String(data.byteLength)}:{}),...headers},...(data===undefined?{}:{body:binary?data:JSON.stringify(data)})}),env);}
+async function ok(path,data){const r=await req(path,data);assert.equal(r.status,200,await r.clone().text());return r.json();}
+const base='/api/admin';
+assert.equal((await req(base+'/courses')).status,401);assert.equal((await req('/LMS/admin')).status,302);
+const learnerCookie=await login('learner');assert.equal((await req(base+'/notes')).status,403);assert.equal((await req('/LMS/admin.html')).status,403);assert.equal((await req(base+'/courses',{})).status,403);
+const adminCookie=await login('admin',true);assert.equal((await req('/LMS/admin')).status,200);assert.equal((await ok('/api/me')).user.admin,true);
+assert.equal((await req(base+'/courses',{}, {Origin:'null'})).status,403);
+const q=Array.from({length:10},(_,i)=>({prompt:'Synthetic question '+i,options:['Right','Wrong','Other'],correct:0}));
+let d={title:'Draft test course',description:'Synthetic course for regression only.',category:'QA',level:'Foundational',course_code:'QA-901',questions:q,published:false};
+const course=(await ok(base+'/courses',d)).id;
+assert.equal((await req(base+'/courses',d)).status,409);
+assert.ok(!(await ok('/api/courses')).courses.some(c=>c.id===course));
+let detail=await ok(base+'/courses/'+course);assert.equal(detail.questions.length,10);
+assert.equal((await req(base+'/courses/'+course,{...d,revision:0,published:true})).status,400);
+assert.equal((await req(base+'/courses/'+course,{...d,revision:5})).status,409);
+const bytes=new Uint8Array(8*1024**2+100);bytes.set(new TextEncoder().encode('ftyp'),4);
+const upload=await ok(base+'/courses/'+course+'/video-upload',{size:bytes.length,duration:100,revision:detail.course.admin_revision,progressMode:'reset'});
+assert.equal((await req(base+'/video-uploads/'+upload.id+'/complete',{})).status,400);
+cookie=learnerCookie;assert.equal((await req(base+'/video-uploads/'+upload.id+'/part?number=1',bytes.slice(0,upload.partSize))).status,403);cookie=adminCookie;
+await ok(base+'/video-uploads/'+upload.id+'/part?number=1',bytes.slice(0,upload.partSize));await ok(base+'/video-uploads/'+upload.id+'/part?number=2',bytes.slice(upload.partSize));await ok(base+'/video-uploads/'+upload.id+'/complete',{});await ok(base+'/video-uploads/'+upload.id+'/complete',{});
+detail=await ok(base+'/courses/'+course);assert.ok(detail.course.asset_key);assert.equal(detail.course.duration_seconds,100);
+await ok(base+'/courses/'+course,{...d,revision:detail.course.admin_revision,published:true});
+assert.ok((await ok('/api/courses')).courses.some(c=>c.id===course));
+assert.equal((await req(base+'/courses/'+course+'/video-upload',{size:100,duration:10})).status,409);
+const files={'h5p.json':JSON.stringify({mainLibrary:'H5P.Fixture',preloadedDependencies:[{machineName:'H5P.Fixture',majorVersion:'1',minorVersion:'0'}]}),'content/content.json':'{}','H5P.Fixture-1.0/library.json':JSON.stringify({machineName:'H5P.Fixture',majorVersion:1,minorVersion:0,preloadedJs:[{path:'script.js'}]}),'H5P.Fixture-1.0/script.js':'/* synthetic fixture */'};
+async function packageUpload(){const manifest=[];for(const [path,t] of Object.entries(files)){const b=new TextEncoder().encode(t);manifest.push({path,size:b.length,sha256:await hash(b)});}const p=await ok(base+'/courses/'+course+'/activities',{title:'Fixture activity',files:manifest});assert.equal((await req(base+'/activities/'+p.id+'/finalize',{})).status,400);for(const [path,t] of Object.entries(files))await ok(base+'/activities/'+p.id+'/file?path='+encodeURIComponent(path),new TextEncoder().encode(t));await ok(base+'/activities/'+p.id+'/finalize',{});return p.id;}
+assert.equal((await req(base+'/courses/'+course+'/activities',{title:'Bad path',files:[{path:'../evil.js',size:1,sha256:'0'.repeat(64)}]})).status,400);
+const p=await packageUpload();assert.equal((await req(base+'/activities/'+p+'/attach',{required:true})).status,400);
+const corruptBytes=new TextEncoder().encode('{}');
+const corrupt=await ok(base+'/courses/'+course+'/activities',{title:'Checksum rejection fixture',files:[{path:'h5p.json',size:2,sha256:'0'.repeat(64)},{path:'content/content.json',size:2,sha256:await hash(corruptBytes)}]});
+assert.equal((await req(base+'/activities/'+corrupt.id+'/file?path=h5p.json',corruptBytes)).status,400);
+assert.equal(db.prepare('SELECT uploaded FROM activity_files WHERE package_id=? AND path=?').get(corrupt.id,'h5p.json').uploaded,0);
+const preview=await ok(base+'/activities/'+p+'/launch',{});let payload={token:preview.token,activityId:p,objectId:'urn:advancedcpe:activity:'+p,verb:'completed',completed:true};
+assert.equal((await req(base+'/activities/'+p+'/verify',{...payload,objectId:'urn:sub-step'})).status,400);
+await ok(base+'/activities/'+p+'/verify',payload);await ok(base+'/activities/'+p+'/attach',{required:true});
+assert.equal(db.prepare('SELECT count(*) n FROM activity_completions').get().n,0);
+cookie=learnerCookie;db.prepare('INSERT INTO course_access(id,user_id,payment_reference) VALUES(?,?,?)').run('grant','learner','qa-access');
+await ok('/api/courses/'+course+'/start',{});db.prepare('UPDATE course_progress SET watched_seconds=96 WHERE user_id=? AND course_id=?').run('learner',course);
+assert.equal((await req('/api/courses/'+course+'/test/start',{})).status,403);
+const launch=await ok('/api/courses/'+course+'/activity/launch',{});const shell=await req(launch.playerUrl);assert.match(shell.headers.get('Content-Security-Policy'),/sandbox allow-scripts/);assert.ok(!shell.headers.get('Content-Security-Policy').includes('allow-same-origin'));
+const asset=await req('/api/activity-assets/'+launch.token+'/h5p.json',undefined,{Cookie:''});assert.equal(asset.status,200);assert.equal(asset.headers.get('Access-Control-Allow-Origin'),'*');
+const expired=await ok('/api/courses/'+course+'/activity/launch',{});db.prepare('UPDATE activity_launches SET expires_at=0 WHERE token_hash=?').run(await hash(expired.token));assert.equal((await req(expired.playerUrl)).status,403);
+assert.equal((await req('/api/activity-assets/'+'0'.repeat(64)+'/h5p.json')).status,403);
+assert.equal((await req('/api/courses/'+course+'/activity/complete',payload)).status,403);
+payload={...payload,token:launch.token};assert.equal((await req('/api/courses/'+course+'/activity/complete',{...payload,completed:false})).status,400);
+await login('other');assert.equal((await req('/api/courses/'+course+'/activity/complete',payload)).status,402);
+cookie=learnerCookie;await ok('/api/courses/'+course+'/activity/complete',payload);await ok('/api/courses/'+course+'/activity/complete',payload);
+assert.equal(db.prepare('SELECT count(*) n FROM activity_completions').get().n,1);
+const attempt=await ok('/api/courses/'+course+'/test/start',{});assert.ok(attempt.attemptId);
+// A replacement activity invalidates the prerequisite for an unfinished test.
+cookie=adminCookie;const p2=await packageUpload();const preview2=await ok(base+'/activities/'+p2+'/launch',{});await ok(base+'/activities/'+p2+'/verify',{token:preview2.token,activityId:p2,objectId:'urn:advancedcpe:activity:'+p2,verb:'answered',completed:true});await ok(base+'/activities/'+p2+'/attach',{required:true});
+cookie=learnerCookie;assert.equal((await req('/api/courses/'+course+'/test/submit',{attemptId:attempt.attemptId,answers:Array(10).fill(0)})).status,403);
+assert.equal((await req('/api/courses/'+course+'/activity/complete',payload)).status,409);
+db.exec("UPDATE course_access SET revoked_at=unixepoch() WHERE user_id='learner'");assert.equal((await req('/api/activity-assets/'+launch.token+'/h5p.json',undefined,{Cookie:''})).status,403);
+cookie=adminCookie;assert.ok((await ok(base+'/learners')).learners.length>=3);assert.equal((await req(base+'/notes')).status,200);
+assert.ok(db.prepare('SELECT count(*) n FROM admin_audit').get().n>0);
+// YouTube source editing, payment protection, and non-destructive replacement.
+const yc=(await ok(base+'/courses',{...d,course_code:'QA-902'})).id;
+const yd={url:'https://youtu.be/M7lc1UVf-VE?t=20',duration:100,revision:0,progressMode:'reset'};
+for(const url of ['https://youtube.com.evil.test/watch?v=M7lc1UVf-VE','javascript:alert(1)','https://youtube.com/playlist?list=abc','https://youtu.be/too-short','https://evil.test/M7lc1UVf-VE'])assert.equal((await req(base+'/courses/'+yc+'/youtube',{...yd,url})).status,400);
+cookie=learnerCookie;assert.equal((await req(base+'/courses/'+yc+'/youtube',yd)).status,403);cookie=adminCookie;
+await ok(base+'/courses/'+yc+'/youtube',yd);
+let ycDetail=await ok(base+'/courses/'+yc);assert.equal(ycDetail.course.youtube_id,'M7lc1UVf-VE');assert.equal(ycDetail.course.asset_key,null);
+await ok(base+'/courses/'+yc,{...d,course_code:'QA-902',revision:ycDetail.course.admin_revision,published:true});
+cookie='';const publicYt=(await ok('/api/courses')).courses.find(c=>c.id===yc);assert.equal(publicYt.available,1);assert.ok(!('youtube_id' in publicYt));assert.equal((await req('/api/courses/'+yc+'/start',{})).status,401);
+cookie=learnerCookie;assert.equal((await req('/api/courses/'+yc+'/start',{})).status,402);db.exec("UPDATE course_access SET revoked_at=NULL WHERE user_id='learner'");
+const yStart=await ok('/api/courses/'+yc+'/start',{});assert.equal(yStart.video.type,'youtube');assert.equal(yStart.video.id,'M7lc1UVf-VE');assert.equal((await req('/api/courses/'+yc+'/video')).status,409);
+db.prepare("UPDATE course_progress SET watched_seconds=96,watched_ranges='[[0,96]]',position_seconds=40 WHERE user_id='learner' AND course_id=?").run(yc);
+const yAttempt=await ok('/api/courses/'+yc+'/test/start',{});
+cookie=adminCookie;ycDetail=await ok(base+'/courses/'+yc);
+assert.equal((await req(base+'/courses/'+yc+'/youtube',{...yd,revision:ycDetail.course.admin_revision,duration:200,progressMode:'preserve'})).status,400);
+await ok(base+'/courses/'+yc+'/youtube',{...yd,revision:ycDetail.course.admin_revision,progressMode:'preserve'});
+assert.equal(db.prepare('SELECT watched_seconds FROM course_progress WHERE course_id=?').get(yc).watched_seconds,96);
+cookie=learnerCookie;assert.equal((await req('/api/courses/'+yc+'/progress',{token:yStart.token,position:40,playing:false})).status,409);
+cookie=adminCookie;ycDetail=await ok(base+'/courses/'+yc);
+const replacement=await ok(base+'/courses/'+yc+'/video-upload',{size:100,duration:200,revision:ycDetail.course.admin_revision,progressMode:'reset'});
+await ok(base+'/video-uploads/'+replacement.id+'/part?number=1',bytes.slice(0,100));await ok(base+'/video-uploads/'+replacement.id+'/complete',{});await ok(base+'/video-uploads/'+replacement.id+'/complete',{});
+ycDetail=await ok(base+'/courses/'+yc);assert.equal(ycDetail.course.youtube_id,null);assert.ok(ycDetail.course.asset_key);
+assert.equal(db.prepare('SELECT watched_seconds FROM course_progress WHERE course_id=?').get(yc).watched_seconds,0);
+assert.equal(db.prepare('SELECT count(*) n FROM video_progress_archive WHERE course_id=? AND watched_seconds=96').get(yc).n,2);
+cookie=learnerCookie;assert.equal((await req('/api/courses/'+yc+'/test/submit',{attemptId:yAttempt.attemptId,answers:Array(10).fill(0)})).status,403);
+cookie=adminCookie;const oldKey=ycDetail.course.asset_key;
+const stale=await ok(base+'/courses/'+yc+'/video-upload',{size:100,duration:200,revision:ycDetail.course.admin_revision,progressMode:'reset'});await ok(base+'/video-uploads/'+stale.id+'/part?number=1',bytes.slice(0,100));
+await ok(base+'/courses/'+yc+'/youtube',{...yd,revision:ycDetail.course.admin_revision,duration:200});
+assert.equal((await req(base+'/video-uploads/'+stale.id+'/complete',{})).status,409);assert.ok(await bucket.head(oldKey));assert.equal((await ok(base+'/courses/'+yc)).course.youtube_id,yd.url.split('/').pop().split('?')[0]);
+console.log('PASS: YouTube URL validation, paid access and catalog privacy, replace uploads/links, progress preserve/reset/archive, stale upload rejection, old object retention and current-video test gate.');
+// Learner-owned profiles and accurate one-time access status.
+cookie='';assert.equal((await req('/api/account')).status,401);
+cookie=learnerCookie;let account=await ok('/api/account');assert.equal(account.access.recurring,false);assert.equal(account.access.libraryActive,true);assert.ok(!JSON.stringify(account).includes('password_hash'));assert.ok(!JSON.stringify(account).includes('payment_reference'));
+const profile={first_name:'Updated',last_name:'Learner',country:'United States',organization:'Example',job_title:'Accountant',city:'Sacramento',region:'CA',phone:'',designation:'',license_number:'',license_region:'',marketing_opt_in:false,email:'attacker@example.invalid',user_id:'admin',admin:true};
+assert.equal((await req('/api/account',profile,{Origin:'https://evil.test'})).status,403);
+assert.equal((await req('/api/account',{...profile,first_name:''})).status,400);
+await ok('/api/account',profile);account=await ok('/api/account');assert.equal(account.user.name,'Updated Learner');assert.equal(account.user.email,'learner@example.invalid');assert.equal((await ok('/api/me')).user.admin,false);assert.equal(db.prepare("SELECT name FROM users WHERE id='admin'").get().name,'admin');
+assert.equal(account.profile.marketing_opt_in,false);assert.equal(db.prepare("SELECT marketing_consent_at FROM user_profiles WHERE user_id='learner'").get().marketing_consent_at,null);
+await ok('/api/account',{...profile,marketing_opt_in:true});assert.ok(db.prepare("SELECT marketing_consent_at FROM user_profiles WHERE user_id='learner'").get().marketing_consent_at);
+db.exec("UPDATE course_access SET revoked_at=unixepoch() WHERE user_id='learner'");account=await ok('/api/account');assert.equal(account.access.libraryActive,false);assert.equal(account.access.grants[0].status,'revoked');
+// Course trash is recoverable and never deletes learning, quiz or media records.
+let trashDetails;cookie=adminCookie;trashDetails=await ok(base+'/courses/'+yc);const trashInput={revision:trashDetails.course.admin_revision,confirmCode:trashDetails.course.course_code};
+cookie=learnerCookie;assert.equal((await req(base+'/courses/'+yc+'/trash',trashInput)).status,403);cookie=adminCookie;
+assert.equal((await req(base+'/courses/'+yc+'/trash',{...trashInput,confirmCode:'WRONG'})).status,400);
+const attemptsBefore=db.prepare('SELECT count(*) n FROM quiz_attempts WHERE course_id=?').get(yc).n;
+await ok(base+'/courses/'+yc+'/trash',trashInput);assert.ok(!(await ok('/api/courses')).courses.some(c=>c.id===yc));assert.equal((await req('/api/courses/'+yc+'/start',{})).status,404);
+assert.equal(db.prepare('SELECT count(*) n FROM quiz_attempts WHERE course_id=?').get(yc).n,attemptsBefore);assert.ok(await bucket.head(oldKey));assert.equal((await req(base+'/courses/'+yc+'/youtube',{...yd,revision:trashInput.revision+1})).status,409);
+trashDetails=await ok(base+'/courses/'+yc);assert.ok(trashDetails.course.deleted_at);assert.equal((await req(base+'/courses/'+yc+'/restore',trashInput)).status,409);
+await ok(base+'/courses/'+yc+'/restore',{...trashInput,revision:trashDetails.course.admin_revision});trashDetails=await ok(base+'/courses/'+yc);assert.equal(trashDetails.course.deleted_at,null);assert.equal(trashDetails.course.published,0);assert.ok(!(await ok('/api/courses')).courses.some(c=>c.id===yc));
+console.log('PASS: private account/profile ownership, validation, consent, immutable sign-in identity and roles, truthful access status, course trash/restore, confirmation and preserved records.');
+console.log('PASS: admin auth/CSRF, private notes/questions, draft/publish validation, course revisions, multipart video integrity/ownership/retry, H5P manifest/checksum/paths, isolated player, preview verification, learner gating, replacement versions, completion ownership/idempotency and revocation.');db.close();

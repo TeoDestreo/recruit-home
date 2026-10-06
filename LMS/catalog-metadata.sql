@@ -1,0 +1,18 @@
+-- Titles transcribed from supplied PPTX/DOCX filenames; subject categories assigned for browsing.
+-- Courses 1-3 have source documents but no MP4, so are visible as coming soon.
+INSERT INTO courses(id,title,description,category,level,hours,asset_key,published,duration_seconds) VALUES('course-1','Introduction to Non-Profit Organizations','An introduction to nonprofit organizations.','Nonprofit Fundamentals','Not specified',0,NULL,1,0) ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,category=excluded.category;
+INSERT INTO courses(id,title,description,category,level,hours,asset_key,published,duration_seconds) VALUES('course-2','Building Your NFP Tech Stack','Explore the technology tools used in nonprofit operations.','Technology & Systems','Not specified',0,NULL,1,0) ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,category=excluded.category;
+INSERT INTO courses(id,title,description,category,level,hours,asset_key,published,duration_seconds) VALUES('course-3','AR Basics Tracking Income & Donations','Learn the basics of tracking income and donations.','Accounting Operations','Not specified',0,NULL,1,0) ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,category=excluded.category;
+UPDATE courses SET title='AP Basics Bills, Expenses, & Receipts',description='Work through accounts payable, bills, expenses, and receipts.',category='Accounting Operations' WHERE id='course-4';
+UPDATE courses SET title='Special Transaction Rules 1099s & In-Kind Gifts',description='Explore special transaction rules for 1099s and in-kind gifts.',category='Revenue & Grants' WHERE id='course-5';
+UPDATE courses SET title='Advanced Revenue Restrictions & Pledges',description='Explore restrictions and pledges in nonprofit revenue accounting.',category='Revenue & Grants' WHERE id='course-6';
+UPDATE courses SET title='Advanced Expenses Functional Allocations',description='Explore functional expense allocations.',category='Budgeting & Reporting' WHERE id='course-7';
+UPDATE courses SET title='Grant Accounting & Tracking',description='Explore grant accounting and tracking.',category='Revenue & Grants' WHERE id='course-8';
+UPDATE courses SET title='Payroll Basics & The Functional “Split”',description='Explore payroll basics and functional expense splits.',category='Accounting Operations' WHERE id='course-9';
+UPDATE courses SET title='The Monthly Reconciliation Process',description='Work through the monthly reconciliation process.',category='Accounting Operations' WHERE id='course-10';
+UPDATE courses SET title='NFP Budgeting & Forecasting',description='Explore budgeting and forecasting for nonprofits.',category='Budgeting & Reporting' WHERE id='course-11';
+UPDATE courses SET title='Internal Controls for Tiny Teams',description='Explore internal controls for small teams.',category='Controls & Compliance' WHERE id='course-12';
+UPDATE courses SET title='Financial Reports Demystified',description='Understand nonprofit financial reports.',category='Budgeting & Reporting' WHERE id='course-13';
+UPDATE courses SET title='Crafting the Board Financial Packet',description='Explore preparation of financial information for a nonprofit board.',category='Budgeting & Reporting' WHERE id='course-14';
+UPDATE courses SET title='The Form 990 & Annual Compliance',description='Explore Form 990 and annual compliance topics.',category='Controls & Compliance' WHERE id='course-15';
+UPDATE courses SET title='QuickBooks Online Setup for Nonprofits',description='Explore QuickBooks Online setup for nonprofits.',category='Technology & Systems' WHERE id='course-16';

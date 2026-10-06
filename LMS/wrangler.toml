@@ -1,0 +1,18 @@
+name = "recruit-home"
+compatibility_date = "2026-09-25"
+pages_build_output_dir = "./dist"
+
+[vars]
+TURNSTILE_SITE_KEY = "0x4AAAAAAFJdJbhQ4uUyGTnd"
+PASSWORD_RESET_FROM = "noreply@advancedcpe.com"
+CF_ACCOUNT_ID = "ef7d930dd08e89e749df7b27c60f0684"
+
+[[d1_databases]]
+binding = "DB"
+migrations_dir = "migrations"
+database_name = "advancedcpe-lms-test"
+database_id = "fdbc1e0e-50c8-42dd-84aa-e9724ac7f802"
+
+[[r2_buckets]]
+binding = "COURSE_STORAGE"
+bucket_name = "advancedcpe-r2"

@@ -1,0 +1,13 @@
+# Local Cloudflare state and dependencies
+.wrangler/
+node_modules/
+.dev.vars
+.env
+.env.*
+
+# Course source files are uploaded to R2, not GitHub
+LMS/Courses/
+Courses/
+*.mp4
+LMS/dist/
+LMS/private/

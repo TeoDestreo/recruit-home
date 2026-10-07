@@ -20,6 +20,7 @@ db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,unixe
 // Obvious synthetic questions intentionally make UI pass/fail testing reproducible.
 const questions=Array.from({length:10},(_,i)=>({prompt:`Local UI fixture ${i+1}: choose the correct test option.`,options:['Correct test option','Incorrect test option','Another incorrect option'],correct:0}));
 db.prepare('INSERT INTO course_quizzes(course_id,version,questions_json,published) SELECT id,1,?,1 FROM courses WHERE asset_key IS NOT NULL AND duration_seconds>0').run(JSON.stringify(questions));
+for(const f of ['0011_password_reset.sql','0012_annual_library_access.sql','0013_multiple_course_activities.sql','0014_unified_learning_items.sql'])db.exec(readFileSync(new URL('migrations/'+f,import.meta.url),'utf8'));
 function statement(sql,args=[]){return {bind(...a){return statement(sql,a);},async first(){return db.prepare(sql).get(...args)||null;},async all(){return {results:db.prepare(sql).all(...args)};},async run(){return {meta:{changes:db.prepare(sql).run(...args).changes}};}};}
 const root=resolve('LMS/dist');
 const types={'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png','.woff':'font/woff','.woff2':'font/woff2','.ttf':'font/ttf','.eot':'application/vnd.ms-fontobject','.txt':'text/plain'};

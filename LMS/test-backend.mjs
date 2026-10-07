@@ -11,6 +11,7 @@ db.exec(readFileSync(new URL('migrations/0009_video_sources.sql',import.meta.url
 db.exec(readFileSync(new URL('migrations/0010_accounts_course_trash.sql',import.meta.url),'utf8'));
 const mockQuestions=Array.from({length:10},(_,i)=>({prompt:`Synthetic test question ${i+1}`,options:['Synthetic correct choice','Synthetic incorrect choice','Another incorrect choice'],correct:0}));
 db.prepare('INSERT INTO course_quizzes(course_id,version,questions_json,published) VALUES(?,1,?,1)').run('course-4',JSON.stringify(mockQuestions));
+for(const file of ['0011_password_reset.sql','0012_annual_library_access.sql','0013_multiple_course_activities.sql','0014_unified_learning_items.sql'])db.exec(readFileSync(new URL('migrations/'+file,import.meta.url),'utf8'));
 function statement(sql,args=[]) { return {
   bind(...values){return statement(sql,values);},
   async first(){return db.prepare(sql).get(...args)||null;},
@@ -35,10 +36,10 @@ async function request(path,data,extra={}) {
 }
 assert.equal((await request('/courses')).status,200);
 const publicCourses=(await (await request('/courses')).json()).courses;
-assert.equal(publicCourses.length,28);assert.equal(publicCourses.filter(c=>!c.available).length,15);
-assert.equal(new Set(publicCourses.map(c=>c.course_code)).size,28);
-assert.ok(publicCourses.filter(c=>!c.available).every(c=>c.topic_path.startsWith('/topics/')));
-assert.ok(publicCourses.every(c=>!c.has_access&&!c.watched_seconds&&!('asset_key' in c)));
+assert.equal(publicCourses.length,32);assert.equal(publicCourses.filter(c=>!c.available).length,19);
+assert.equal(new Set(publicCourses.map(c=>c.course_code)).size,32);
+assert.ok(publicCourses.filter(c=>c.content_type==='guide').every(c=>c.topic_path.startsWith('/topics/')));
+assert.ok(publicCourses.every(c=>Boolean(c.has_access)===(c.access_tier==='free')&&!c.watched_seconds&&!('asset_key' in c)));
 assert.deepEqual(publicCourses.map(c=>c.category),publicCourses.map(c=>c.category).sort((a,b)=>a.localeCompare(b)));
 assert.equal((await request('/courses/course-4/video')).status,401);
 const credentials={email:'test@example.com',firstName:'Test',lastName:'Learner',country:'United States',password:'Test123!',turnstileToken:'valid'};
@@ -52,7 +53,7 @@ let res=await request('/auth/register',credentials);assert.equal(res.status,200)
 assert.match(res.headers.get('set-cookie'),/HttpOnly/);assert.match(cookie,/^__Host-/);
 assert.equal((await request('/auth/register',{...credentials,email:'TEST@example.com'})).status,409);
 assert.equal((await request('/auth/login',{...credentials,password:'Not the correct password'})).status,401);
-assert.equal((await (await request('/courses')).json()).courses.length,28);
+assert.equal((await (await request('/courses')).json()).courses.length,32);
 assert.ok(!db.prepare('SELECT password_hash FROM users').get().password_hash.includes(credentials.password));
 assert.equal((await request('/courses/course-4/video')).status,402);
 assert.equal((await request('/courses/course-4/start',{})).status,402);

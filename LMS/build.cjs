@@ -6,7 +6,7 @@ const { join } = require('node:path');
 const target = join(__dirname, 'dist');
 mkdirSync(join(target,'LMS'), {recursive:true});
 const site=require('./site-pages.cjs');
-writeFileSync(join(target,'index.html'),readFileSync(join(__dirname,'../index.html'),'utf8').replace('<!-- SITE_NAV -->',site.nav).replace('<!-- SITE_FOOTER -->',site.footer).replace('<!-- ARTICLE_CARDS -->',site.articleCards()));
+writeFileSync(join(target,'index.html'),readFileSync(join(__dirname,'../index.html'),'utf8').replace('<!-- ARTICLE_CARDS -->',site.articleCards()));
 writeFileSync(join(target,'site.css'),readFileSync(join(__dirname,'site.css'),'utf8')+'\n'+readFileSync(join(__dirname,'site-polish.css'),'utf8'));
 const pagePaths=site.build(target);
 mkdirSync(join(target,'assets'),{recursive:true});
@@ -47,8 +47,14 @@ for(const asset of ['receipt.js','receipt.css'])receiptPage=receiptPage.replace(
 writeFileSync(join(target,'LMS/receipt.html'),receiptPage);
 const siteVersion=createHash('sha256').update(readFileSync(join(target,'site.css'))).digest('hex').slice(0,12);
 function versionPages(dir){for(const item of readdirSync(dir,{withFileTypes:true})){const path=join(dir,item.name);if(item.isDirectory())versionPages(path);else if(item.name.endsWith('.html'))writeFileSync(path,readFileSync(path,'utf8').replace('href="/site.css"','href="/site.css?v='+siteVersion+'"'));}}
-function accountLinks(dir){for(const item of readdirSync(dir,{withFileTypes:true})){const path=join(dir,item.name);if(item.isDirectory())accountLinks(path);else if(item.name.endsWith('.html')){let html=readFileSync(path,'utf8');if(!path.startsWith(join(target,'LMS')+require('node:path').sep))html=html.replace('</head>','<script src="/LMS/account-nav.js?v='+createHash('sha256').update(readFileSync(join(__dirname,'account-nav.js'))).digest('hex').slice(0,12)+'" defer></script></head>');else if(item.name==='account.html'){for(const asset of ['account.js','styles.css'])html=html.replace('/LMS/'+asset,'/LMS/'+asset+'?v='+createHash('sha256').update(readFileSync(join(__dirname,asset))).digest('hex').slice(0,12));}writeFileSync(path,html);}}}
+function accountLinks(dir){for(const item of readdirSync(dir,{withFileTypes:true})){const path=join(dir,item.name);if(item.isDirectory())accountLinks(path);else if(item.name.endsWith('.html')){let html=readFileSync(path,'utf8');if(item.name==='account.html'&&path.startsWith(join(target,'LMS')+require('node:path').sep)){for(const asset of ['account.js','styles.css'])html=html.replace('/LMS/'+asset,'/LMS/'+asset+'?v='+createHash('sha256').update(readFileSync(join(__dirname,asset))).digest('hex').slice(0,12));}writeFileSync(path,html);}}}
 accountLinks(target);
+// One header and footer everywhere: fill the placeholders and add their stylesheet and script.
+const chrome=require('./site-chrome.cjs');copyFileSync(join(__dirname,'chrome.css'),join(target,'chrome.css'));
+const chromeVersion=name=>createHash('sha256').update(readFileSync(join(__dirname,name))).digest('hex').slice(0,12);
+const chromeHead='<link rel="stylesheet" href="/chrome.css?v='+chromeVersion('chrome.css')+'"><script src="/LMS/account-nav.js?v='+chromeVersion('account-nav.js')+'" defer></script></head>';
+function chromePages(dir){for(const item of readdirSync(dir,{withFileTypes:true})){const path=join(dir,item.name);if(item.isDirectory()){if(item.name!=='vendor')chromePages(path);continue;}if(!item.name.endsWith('.html'))continue;const html=readFileSync(path,'utf8');if(!html.includes('<!-- SITE_HEADER -->'))continue;writeFileSync(path,html.replace('<!-- SITE_HEADER -->',chrome.header).replace('<!-- SITE_FOOTER -->',chrome.footer).replace('</head>',chromeHead));}}
+chromePages(target);
 versionPages(target);
 // Installable app: manifest, icons, service worker and the "Install app" button on every page but certificates.
 for(const name of ['icon-192.png','icon-512.png','icon-maskable-512.png','apple-touch-icon.png'])copyFileSync(join(__dirname,'assets/icons',name),join(target,name));

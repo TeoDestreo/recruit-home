@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Learning library | Advanced CPE</title><link rel="stylesheet" href="/LMS/styles.css"><script src="/LMS/youtube-player.js" defer></script><script src="/LMS/app.js" defer></script></head>
 <body>
-<header><a class="brand" href="/"><b>A+</b> Advanced CPE</a><nav><a id="admin-link" href="/LMS/admin" hidden>Admin dashboard</a><button id="browse" class="secondary">Browse courses</button> <button id="login">Sign in</button><span id="account" hidden><a id="greeting" href="/LMS/account" title="My profile and membership"></a> <button id="logout" class="secondary">Sign out</button></span></nav></header>
+<!-- SITE_HEADER -->
 <main>
 <p id="message" role="status" aria-live="polite">Loading your learning library…</p>
 <div id="verify-banner" class="panel verify-banner" hidden><p><strong>Confirm your email to start learning.</strong> We sent a confirmation link to <span id="verify-email"></span>. Courses, coupons and checkout unlock once you confirm.</p><button id="verify-resend" class="secondary">Resend email</button></div>
@@ -34,5 +34,5 @@
 <section id="test" class="panel" hidden aria-labelledby="test-title"><button id="test-back" class="secondary">← Back to lesson</button><p class="eyebrow">Course assessment</p><h1 id="test-title" tabindex="-1"></h1><p id="test-instructions"></p><form id="test-form"><div id="test-questions"></div><p>Submit only when you are ready. A complete submission uses one of your three attempts. You cannot review your answers after submitting.</p><button id="test-submit" type="submit">Submit test</button></form><div id="test-result" hidden><h2 id="test-outcome" tabindex="-1"></h2><p id="test-score"></p><p id="test-remaining"></p><button id="test-certificate" hidden>View certificate</button><button id="test-retry" hidden>Try again</button></div></section>
 <section id="interactive" class="panel" hidden><button id="activity-back" class="secondary">← Back to lesson</button><h1 id="activity-title"></h1><p id="activity-feedback" role="status"></p><iframe id="activity-frame" title="Course interactive activity" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe></section>
 <button id="view-certificate" hidden>View certificate</button>
-</main><footer>Advanced CPE · Smart people keep learning.<br><a href="/about/">About us</a> · <a href="/contact/">Contact us</a> · <a href="/faq/">FAQs</a> · <a href="/privacy/">Privacy</a> · <a href="tel:+19165000508">916-500-0508</a></footer>
+</main><!-- SITE_FOOTER -->
 </body></html>

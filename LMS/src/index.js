@@ -1,5 +1,8 @@
 import {accountRoute} from './account.js';
 import {emailReady,sendEmail,escapeHtml} from './email.js';
+import siteChrome from '../site-chrome.cjs';
+// Head links shared by the pages this worker renders, matching the built pages.
+const PAGE_HEAD='<link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/site.css"><link rel="stylesheet" href="/chrome.css"><link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="stylesheet" href="/install.css"><script src="/LMS/account-nav.js" defer></script><script src="/install.js" defer></script>';
 import {isAdmin,adminRoute,activityState,requireActivity,activityPublic,learnerActivity} from './admin.js';
 const encoder = new TextEncoder();
 const json = (data, status=200, headers={}) => Response.json(data,{status,headers:{'Cache-Control':'no-store',...headers}});
@@ -447,7 +450,7 @@ async function learningPage(request,env,path){
     const {results}=await env.DB.prepare("SELECT c.title,c.description,c.slug,c.category FROM courses c JOIN learning_modules m ON m.course_id=c.id AND m.module_type='article' AND m.enabled=1 AND m.published=1 WHERE c.content_type='article' AND c.published=1 AND c.deleted_at IS NULL ORDER BY c.category COLLATE NOCASE,c.title").all();
     const esc=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
     const cards=results.map(r=>`<article class="card"><span class="tag">${esc(r.category)}</span><h2><a href="/articles/${esc(r.slug)}/">${esc(r.title)}</a></h2><p>${esc(r.description)}</p><a href="/articles/${esc(r.slug)}/">Read article →</a></article>`).join('')||'<p>No articles are published yet.</p>';
-    const html=`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Articles | Advanced CPE</title><link rel="stylesheet" href="/site.css"></head><body><header><nav class="wrap nav"><a class="brand" href="/"><b>A+</b> Advanced CPE</a><div><a href="/LMS/">Course library</a><a href="/about/">About us</a><a href="/contact/">Contact us</a></div></nav></header><main><section class="hero"><div class="wrap"><p class="eyebrow">Articles</p><h1>Useful ideas for the work ahead.</h1><p>Free to explore, no sign-in required.</p></div></section><section class="wrap section grid resource-grid">${cards}</section></main></body></html>`;
+    const html=`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Articles | Advanced CPE</title>${PAGE_HEAD}</head><body>${siteChrome.header}<main><section class="hero"><div class="wrap"><p class="eyebrow">Articles</p><h1>Useful ideas for the work ahead.</h1><p>Free to explore, no sign-in required.</p></div></section><section class="wrap section grid resource-grid">${cards}</section></main>${siteChrome.footer}</body></html>`;
     return new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'public, max-age=60'}});
   }
   if(!/^\/(topics|articles)\/[a-z0-9-]+\/$/.test(path))return null;
@@ -458,10 +461,10 @@ async function learningPage(request,env,path){
   if(row.access_tier==='course_pack'){
     const viewer=await session(request,env);let allowed=false;
     if(viewer)try{await requireAccess(env,viewer,row.id);allowed=true;}catch{}
-    if(!allowed){const html=`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Course Pack access | Advanced CPE</title><link rel="stylesheet" href="/site.css"><body><main class="wrap section"><h1>${esc(row.title)}</h1><p>${esc(row.description)}</p><h2>$100 USD · 1 year</h2><p>This learning item is included in the Course Pack. Sign in to check your access or create an account to enroll.</p><a class="button" href="/LMS/?login=1">Sign in or create an account</a> <a href="/pricing/">View pricing</a></main></body></html>`;return new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'private, no-store'}});}
+    if(!allowed){const html=`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Course Pack access | Advanced CPE</title>${PAGE_HEAD}</head><body>${siteChrome.header}<main class="wrap section"><h1>${esc(row.title)}</h1><p>${esc(row.description)}</p><h2>$100 USD · 1 year</h2><p>This learning item is included in the Course Pack. Sign in to check your access or create an account to enroll.</p><a class="button" href="/LMS/?login=1">Sign in or create an account</a> <a href="/pricing/">View pricing</a></main>${siteChrome.footer}</body></html>`;return new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'private, no-store'}});}
   }
   const body=articleHtml(row.body);
-  const html=`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(row.title)} | Advanced CPE</title><meta name="description" content="${esc(row.description)}"><link rel="stylesheet" href="/site.css"></head><body><header><nav class="wrap nav"><a class="brand" href="/"><b>A+</b> Advanced CPE</a><div><a href="/LMS/">Course library</a><a href="/law-firm-accounting/">Law firms</a><a href="/articles/">Articles</a><a href="/pricing/">Pricing</a></div></nav></header><main><section class="hero"><div class="wrap"><p class="eyebrow">${row.content_type==='guide'?'Free reading guide':'Article'}</p><h1>${esc(row.title)}</h1></div></section><article class="wrap section prose">${body}<p><a href="/LMS/">← Learning library</a></p></article></main></body></html>`;
+  const html=`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(row.title)} | Advanced CPE</title><meta name="description" content="${esc(row.description)}">${PAGE_HEAD}</head><body>${siteChrome.header}<main><section class="hero"><div class="wrap"><p class="eyebrow">${row.content_type==='guide'?'Free reading guide':'Article'}</p><h1>${esc(row.title)}</h1></div></section><article class="wrap section prose">${body}<p><a href="/LMS/">← Learning library</a></p></article></main>${siteChrome.footer}</body></html>`;
   return new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'public, max-age=60'}});
 }
 async function route(request,env) {
@@ -538,7 +541,8 @@ async function route(request,env) {
   }
   const certificateMatch=/^\/api\/certificates\/([a-f0-9-]{36})$/.exec(path);
   if(certificateMatch && method==='GET') {
-    const certificate=await env.DB.prepare('SELECT id,learner_name,course_title,completed_at,issued_at FROM certificates WHERE id=? AND user_id=?').bind(certificateMatch[1],user.id).first();
+    // Learners see their own certificates; administrators can open any learner's.
+    const certificate=await env.DB.prepare('SELECT id,learner_name,course_title,completed_at,issued_at FROM certificates WHERE id=? AND (user_id=? OR ?)').bind(certificateMatch[1],user.id,await isAdmin(env,user)?1:0).first();
     if(!certificate) fail(404,'Certificate not found.');
     return json({certificate});
   }

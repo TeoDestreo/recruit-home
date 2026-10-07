@@ -138,6 +138,20 @@ cookie=(await login('coupon-a'));assert.equal((await ok('/api/courses/'+course+'
 cookie=adminCookie;await ok('/api/admin/courses/'+course+'/captions',{captions:null,transcript:null});
 assert.equal(db.prepare('SELECT count(*) n FROM course_captions').get().n,0);
 
+// ---------- Certificates in the admin console ----------
+db.exec("UPDATE enrollments SET completed_at=CURRENT_TIMESTAMP WHERE user_id='coupon-a' AND course_id='course-4'");db.prepare("INSERT INTO enrollments(user_id,course_id,completed_at) SELECT 'coupon-a','course-4',CURRENT_TIMESTAMP WHERE NOT EXISTS(SELECT 1 FROM enrollments WHERE user_id='coupon-a' AND course_id='course-4')").run();
+db.prepare("INSERT INTO quiz_attempts(id,user_id,course_id,attempt_number,quiz_version,questions_json,submitted_at,score,passed) VALUES('qa-cert','coupon-a','course-4',1,1,'[]',unixepoch(),90,1)").run();
+db.prepare("INSERT INTO certificates(id,user_id,course_id,learner_name,course_title,completed_at) VALUES('11111111-2222-4333-8444-555555555555','coupon-a','course-4','coupon-a','Course 4',CURRENT_TIMESTAMP)").run();
+cookie=adminCookie;assert.equal((await ok('/api/admin/learners/coupon-a')).certificates[0].id,'11111111-2222-4333-8444-555555555555');
+assert.equal((await ok('/api/certificates/11111111-2222-4333-8444-555555555555')).certificate.learner_name,'coupon-a');
+await login('nosy');await status('/api/certificates/11111111-2222-4333-8444-555555555555',undefined,404);
+
+// ---------- Article editor starting text ----------
+// A guide with no saved article opens in the editor as formatted HTML, so saving keeps headings and lists.
+cookie=adminCookie;const guide=(await ok('/api/admin/courses/course-23')).modules.find(m=>m.module_type==='article');
+assert.match(guide.body,/^<p>[^<]+<\/p><h2>Build your understanding<\/h2><ul>(<li>[^<]+<\/li>){3}<\/ul><h2>A practical starting exercise<\/h2><p>/);
+assert.ok(!guide.body.includes('•'));
+
 // ---------- Receipts ----------
 await login('buyer');const buyerCookie=cookie;
 db.prepare("INSERT INTO user_profiles(user_id,first_name,last_name,country,organization) VALUES('buyer','Buyer','Person','US','Helping Hands Inc')").run();

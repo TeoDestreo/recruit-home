@@ -13,7 +13,6 @@ export function youtubeId(value){
  return id;
 }
 export function checkVideoChange(course,input,duration){
- if(course.topic_path)fail(400,'Reading guides cannot have course videos.');
  if(input.revision!==course.admin_revision)fail(409,'This course changed. Reload before changing its video.');
  if(!Number.isFinite(duration)||duration<=0||duration>86400)fail(400,'Enter the full video duration in seconds, up to 24 hours.');
  if(!['preserve','reset'].includes(input.progressMode))fail(400,'Choose whether to preserve or reset video progress.');

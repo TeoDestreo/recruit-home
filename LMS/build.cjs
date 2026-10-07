@@ -23,7 +23,12 @@ cpSync(join(__dirname,'node_modules/h5p-standalone/dist'),join(target,'LMS/vendo
 copyFileSync(join(__dirname,'node_modules/h5p-standalone/LICENSE'),join(target,'LMS/vendor/h5p/LICENSE.txt'));
 copyFileSync(join(__dirname,'node_modules/fflate/LICENSE'),join(target,'LMS/vendor/fflate-LICENSE.txt'));
 let adminPage=readFileSync(join(target,'LMS/admin.html'),'utf8');
-for(const asset of ['admin.js','admin.css','styles.css']){const source=asset==='admin.js'?join(target,'LMS',asset):join(__dirname,asset);adminPage=adminPage.replace('/LMS/'+asset,'/LMS/'+asset+'?v='+createHash('sha256').update(readFileSync(source)).digest('hex').slice(0,12));}
+adminPage=adminPage.replace('Add video course','Add course / article').replace('<h2>Courses</h2>','<h2>Courses &amp; learning items</h2>');
+adminPage=adminPage.replace(/<div class="rich-editor">[\s\S]*?<\/div><p class="editor-help">[\s\S]*?<\/p>/,readFileSync(join(__dirname,'quill-editor.html'),'utf8').trim());
+copyFileSync(join(__dirname,'node_modules/quill/dist/quill.snow.css'),join(target,'LMS/quill.snow.css'));
+copyFileSync(join(__dirname,'node_modules/quill/LICENSE'),join(target,'LMS/vendor/quill-LICENSE.txt'));
+adminPage=adminPage.replace('<link rel="stylesheet" href="/LMS/admin.css">','<link rel="stylesheet" href="/LMS/quill.snow.css"><link rel="stylesheet" href="/LMS/admin.css">');
+for(const asset of ['admin.js','admin.css','styles.css','quill.snow.css']){const source=asset==='admin.js'?join(target,'LMS',asset):asset==='quill.snow.css'?join(target,'LMS',asset):join(__dirname,asset);adminPage=adminPage.replace('/LMS/'+asset,'/LMS/'+asset+'?v='+createHash('sha256').update(readFileSync(source)).digest('hex').slice(0,12));}
 writeFileSync(join(target,'LMS/admin.html'),adminPage);
 for (const name of ['index.html','app.js','styles.css','certificate.html','certificate.js','certificate.css','receipt.html','receipt.js','receipt.css']) copyFileSync(join(__dirname,name),join(target,'LMS',name));
 // Version assets so an existing browser cannot retain old registration behavior.

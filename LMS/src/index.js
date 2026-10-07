@@ -24,6 +24,22 @@ function cookie(request,token,age=604800) {
   const secure=new URL(request.url).protocol==='https:';
   return `${secure?'__Host-':''}acpe_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${secure?'; Secure':''}`;
 }
+function articleHtml(value) {
+  const escape=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
+  const source=String(value||'');
+  if(!/<\/?[a-z][\s\S]*>/i.test(source))return source.split(/\n\s*\n/).map(p=>`<p>${escape(p).replaceAll('\n','<br>')}</p>`).join('');
+  const allowed=new Set(['p','h2','h3','ul','ol','li','blockquote','strong','b','em','i','u','s','a','br','hr']);
+  return (source.match(/<[^>]*>|[^<]+|</g)||[]).map(token=>{
+    if(token[0]!=='<')return escape(token);
+    const match=token.match(/^<\s*(\/?)\s*([a-z0-9]+)([^>]*)>$/i);if(!match)return escape(token);
+    const [,closing,rawName,attrs]=match,name=rawName.toLowerCase();if(!allowed.has(name))return '';
+    if(closing)return ['br','hr'].includes(name)?'':`</${name}>`;
+    if(name!=='a')return ['br','hr'].includes(name)?`<${name}>`:`<${name}>`;
+    const href=attrs.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i),url=href?.[1]??href?.[2]??href?.[3]??'';
+    if(!/^(https?:\/\/|mailto:)/i.test(url))return '<a>';
+    return `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">`;
+  }).join('');
+}
 async function session(request,env) {
   const key=new URL(request.url).protocol==='https:'?'__Host-acpe_session':'acpe_session';
   const token=(request.headers.get('Cookie')||'').split(';').map(s=>s.trim()).find(s=>s.startsWith(key+'='))?.slice(key.length+1);
@@ -185,9 +201,12 @@ async function verifySignup(request,env,token) {
 async function requireAccess(env,user,courseId) {
   if(await isAdmin(env,user))return;
   requireVerified(user);
+  const course=await env.DB.prepare("SELECT access_tier FROM courses WHERE id=? AND published=1 AND deleted_at IS NULL").bind(courseId).first();
+  if(course?.access_tier==='free')return;
   const access=await env.DB.prepare(`SELECT id FROM course_access WHERE user_id=? AND (course_id=? OR course_id IS NULL) AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>unixepoch()) LIMIT 1`).bind(user.id,courseId).first();
   if(!access) fail(402,'Paid enrollment is required to take this course.');
 }
+async function modulePublished(env,courseId,type){const row=await env.DB.prepare('SELECT enabled,published FROM learning_modules WHERE course_id=? AND module_type=?').bind(courseId,type).first();return row?.enabled===1&&row?.published===1;}
 const PRICE='100.00', CURRENCY='USD', LIBRARY_ACCESS_SECONDS=365*24*60*60;
 const paypalReady=env=>!!(env.PAYPAL_CLIENT_ID&&env.PAYPAL_CLIENT_SECRET);
 async function libraryAccess(env,user) {
@@ -333,7 +352,8 @@ async function quizStatus(env,user,course){
   const rows=await env.DB.prepare('SELECT attempt_number,score,passed FROM quiz_attempts WHERE user_id=? AND course_id=? AND submitted_at IS NOT NULL ORDER BY attempt_number').bind(user.id,course.id).all();
   const progress=await env.DB.prepare('SELECT watched_seconds FROM course_progress WHERE user_id=? AND course_id=?').bind(user.id,course.id).first();
   const certificate=await env.DB.prepare('SELECT id FROM certificates WHERE user_id=? AND course_id=?').bind(user.id,course.id).first();
-  return {...await activityState(env,user,course),attemptsUsed:rows.results.length,attemptsRemaining:3-rows.results.length,passed:rows.results.some(a=>a.passed===1),lastScore:rows.results.at(-1)?.score??null,bestScore:rows.results.length?Math.max(...rows.results.map(a=>a.score)):null,eligible:(progress?.watched_seconds||0)>=course.duration_seconds*0.95,certificateId:certificate?.id||null};
+  const videoRequired=await modulePublished(env,course.id,'video')&&(course.asset_key||course.youtube_id)&&course.duration_seconds>0;
+  return {...await activityState(env,user,course),attemptsUsed:rows.results.length,attemptsRemaining:3-rows.results.length,passed:rows.results.some(a=>a.passed===1),lastScore:rows.results.at(-1)?.score??null,bestScore:rows.results.length?Math.max(...rows.results.map(a=>a.score)):null,eligible:!videoRequired||(progress?.watched_seconds||0)>=course.duration_seconds*0.95,certificateId:certificate?.id||null};
 }
 function shuffled(values){
   const result=[...values];for(let i=result.length-1;i>0;i--){const j=crypto.getRandomValues(new Uint32Array(1))[0]%(i+1);[result[i],result[j]]=[result[j],result[i]];}return result;
@@ -356,7 +376,7 @@ async function courseTest(request,env,user,course,action){
       await env.DB.prepare('UPDATE quiz_attempts SET submitted_at=unixepoch(),score=?,passed=? WHERE id=? AND user_id=? AND submitted_at IS NULL').bind(score,score>70?1:0,attempt.id,user.id).run();
     }
     const result=await env.DB.prepare('SELECT score,passed,attempt_number FROM quiz_attempts WHERE id=? AND user_id=?').bind(attempt.id,user.id).first();
-    if(result.passed)await issueCertificate(env,user,course.id);
+    if(result.passed){if(!await modulePublished(env,course.id,'video'))await env.DB.prepare("INSERT INTO enrollments(user_id,course_id,completed_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(user_id,course_id) DO UPDATE SET completed_at=COALESCE(enrollments.completed_at,excluded.completed_at)").bind(user.id,course.id).run();await issueCertificate(env,user,course.id);}
     return json({score:result.score,passed:!!result.passed,attemptNumber:result.attempt_number,status:await quizStatus(env,user,course)});
   }
   const status=await quizStatus(env,user,course);
@@ -422,6 +442,28 @@ async function video(request,env,course) {
   if(!file) fail(404,'Video not found.');
   return new Response(file.body,{status,headers});
 }
+async function learningPage(request,env,path){
+  if(path==='/articles/'){
+    const {results}=await env.DB.prepare("SELECT c.title,c.description,c.slug,c.category FROM courses c JOIN learning_modules m ON m.course_id=c.id AND m.module_type='article' AND m.enabled=1 AND m.published=1 WHERE c.content_type='article' AND c.published=1 AND c.deleted_at IS NULL ORDER BY c.category COLLATE NOCASE,c.title").all();
+    const esc=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
+    const cards=results.map(r=>`<article class="card"><span class="tag">${esc(r.category)}</span><h2><a href="/articles/${esc(r.slug)}/">${esc(r.title)}</a></h2><p>${esc(r.description)}</p><a href="/articles/${esc(r.slug)}/">Read article →</a></article>`).join('')||'<p>No articles are published yet.</p>';
+    const html=`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Articles | Advanced CPE</title><link rel="stylesheet" href="/site.css"></head><body><header><nav class="wrap nav"><a class="brand" href="/"><b>A+</b> Advanced CPE</a><div><a href="/LMS/">Course library</a><a href="/about/">About us</a><a href="/contact/">Contact us</a></div></nav></header><main><section class="hero"><div class="wrap"><p class="eyebrow">Articles</p><h1>Useful ideas for the work ahead.</h1><p>Free to explore, no sign-in required.</p></div></section><section class="wrap section grid resource-grid">${cards}</section></main></body></html>`;
+    return new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'public, max-age=60'}});
+  }
+  if(!/^\/(topics|articles)\/[a-z0-9-]+\/$/.test(path))return null;
+  const slug=path.split('/')[2],row=await env.DB.prepare("SELECT c.id,c.title,c.description,c.content_type,c.access_tier,c.published item_published,c.deleted_at,m.body,m.enabled,m.published module_published FROM courses c LEFT JOIN learning_modules m ON m.course_id=c.id AND m.module_type='article' WHERE c.slug=?").bind(slug).first();
+  if(row&&(row.item_published!==1||row.deleted_at||row.enabled!==1||row.module_published!==1))return new Response('Not found',{status:404});
+  if(!row||!row.body)return null;
+  const esc=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
+  if(row.access_tier==='course_pack'){
+    const viewer=await session(request,env);let allowed=false;
+    if(viewer)try{await requireAccess(env,viewer,row.id);allowed=true;}catch{}
+    if(!allowed){const html=`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Course Pack access | Advanced CPE</title><link rel="stylesheet" href="/site.css"><body><main class="wrap section"><h1>${esc(row.title)}</h1><p>${esc(row.description)}</p><h2>$100 USD · 1 year</h2><p>This learning item is included in the Course Pack. Sign in to check your access or create an account to enroll.</p><a class="button" href="/LMS/?login=1">Sign in or create an account</a> <a href="/pricing/">View pricing</a></main></body></html>`;return new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'private, no-store'}});}
+  }
+  const body=articleHtml(row.body);
+  const html=`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(row.title)} | Advanced CPE</title><meta name="description" content="${esc(row.description)}"><link rel="stylesheet" href="/site.css"></head><body><header><nav class="wrap nav"><a class="brand" href="/"><b>A+</b> Advanced CPE</a><div><a href="/LMS/">Course library</a><a href="/law-firm-accounting/">Law firms</a><a href="/articles/">Articles</a><a href="/pricing/">Pricing</a></div></nav></header><main><section class="hero"><div class="wrap"><p class="eyebrow">${row.content_type==='guide'?'Free reading guide':'Article'}</p><h1>${esc(row.title)}</h1></div></section><article class="wrap section prose">${body}<p><a href="/LMS/">← Learning library</a></p></article></main></body></html>`;
+  return new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'public, max-age=60'}});
+}
 async function route(request,env) {
   const url=new URL(request.url),path=url.pathname,method=request.method;
   const activityResponse=await activityPublic(request,env);if(activityResponse)return activityResponse;
@@ -432,7 +474,7 @@ async function route(request,env) {
     const asset=await env.ASSETS.fetch(new Request(url.origin+'/LMS/admin',request));
     const h=new Headers(asset.headers);h.set('Cache-Control','private, no-store');return new Response(asset.body,{status:asset.status,headers:h});
   }
-  if(!path.startsWith('/api/')) return env.ASSETS.fetch(request);
+  if(!path.startsWith('/api/')) {const page=await learningPage(request,env,path);return page||env.ASSETS.fetch(request);}
   if(!['GET','HEAD','POST'].includes(method)) fail(405,'Method not allowed.');
   if(method==='POST' && request.headers.get('Origin')!==url.origin) fail(403,'Request origin is not allowed.');
   if(path==='/api/health'&&method==='GET') { await env.DB.prepare('SELECT 1').first(); return json({ok:true}); }
@@ -445,10 +487,14 @@ async function route(request,env) {
   if(path==='/api/me'&&method==='GET') return json({user:user?await publicUser(env,user):null});
   if(path==='/api/courses'&&method==='GET') {
     const uid=user?.id||'';
-    const {results}=await env.DB.prepare(`SELECT c.id,c.title,c.description,c.category,c.level,c.duration_seconds,c.course_code,c.topic_path,
-      CASE WHEN (c.asset_key IS NOT NULL OR c.youtube_id IS NOT NULL) AND c.duration_seconds>0 THEN 1 ELSE 0 END available,
+    const {results}=await env.DB.prepare(`SELECT c.id,c.title,c.description,c.category,c.level,c.duration_seconds,c.course_code,c.topic_path,c.content_type,c.access_tier,c.slug,
+      CASE WHEN (c.asset_key IS NOT NULL OR c.youtube_id IS NOT NULL) AND c.duration_seconds>0 AND EXISTS(SELECT 1 FROM learning_modules m WHERE m.course_id=c.id AND m.module_type='video' AND m.enabled=1 AND m.published=1) THEN 1 ELSE 0 END available,
       e.completed_at,COALESCE(p.position_seconds,0) position_seconds,COALESCE(p.watched_seconds,0) watched_seconds,
-      EXISTS(SELECT 1 FROM course_access a WHERE a.user_id=? AND (a.course_id=c.id OR a.course_id IS NULL) AND a.revoked_at IS NULL AND (a.expires_at IS NULL OR a.expires_at>unixepoch())) has_access
+      CASE WHEN c.access_tier='free' THEN 1 ELSE EXISTS(SELECT 1 FROM course_access a WHERE a.user_id=? AND (a.course_id=c.id OR a.course_id IS NULL) AND a.revoked_at IS NULL AND (a.expires_at IS NULL OR a.expires_at>unixepoch())) END has_access,
+      EXISTS(SELECT 1 FROM learning_modules m WHERE m.course_id=c.id AND m.module_type='video' AND m.enabled=1 AND m.published=1) video_published,
+      EXISTS(SELECT 1 FROM learning_modules m WHERE m.course_id=c.id AND m.module_type='test' AND m.enabled=1 AND m.published=1) test_published,
+      EXISTS(SELECT 1 FROM learning_modules m WHERE m.course_id=c.id AND m.module_type='article' AND m.enabled=1 AND m.published=1) article_published,
+      EXISTS(SELECT 1 FROM learning_modules m WHERE m.course_id=c.id AND m.module_type='lumi' AND m.enabled=1 AND m.published=1) lumi_published
       FROM courses c LEFT JOIN enrollments e ON e.course_id=c.id AND e.user_id=?
       LEFT JOIN course_progress p ON p.course_id=c.id AND p.user_id=?
       WHERE c.published=1 AND c.deleted_at IS NULL ORDER BY c.category COLLATE NOCASE,CAST(substr(c.id,8) AS INTEGER),c.title`).bind(uid,uid,uid).all();
@@ -461,6 +507,12 @@ async function route(request,env) {
   if(activityMatch&&method==='POST'){
     const course=await env.DB.prepare('SELECT * FROM courses WHERE id=? AND published=1').bind(activityMatch[1]).first();if(!course)fail(404,'Course not found.');
     await requireAccess(env,user,course.id);await limit(env,'activity:'+user.id,120,600);return learnerActivity(request,env,user,course,activityMatch[2]);
+  }
+  const activitiesMatch=/^\/api\/courses\/([a-z0-9-]+)\/activities$/.exec(path);
+  if(activitiesMatch&&method==='GET'){
+    const course=await env.DB.prepare('SELECT * FROM courses WHERE id=? AND published=1 AND deleted_at IS NULL').bind(activitiesMatch[1]).first();
+    if(!course||!(await modulePublished(env,course.id,'lumi')))fail(404,'Published Lumi module not found.');
+    await requireAccess(env,user,course.id);return json(await activityState(env,user,course));
   }
   if(path==='/api/checkout/status'&&method==='GET') {
     await limit(env,'paypal-status:'+user.id,5,600);
@@ -480,7 +532,7 @@ async function route(request,env) {
     const action=quizMatch[2]||'status';
     if(method!==(action==='status'?'GET':'POST'))fail(405,'Method not allowed.');
     const course=await env.DB.prepare('SELECT * FROM courses WHERE id=? AND published=1').bind(quizMatch[1]).first();
-    if(!course||(!course.asset_key&&!course.youtube_id)||course.duration_seconds<=0)fail(404,'Video course not found.');
+    if(!course||!(await modulePublished(env,course.id,'test')))fail(404,'Published course test not found.');
     await requireAccess(env,user,course.id);
     return courseTest(request,env,user,course,action);
   }
@@ -511,7 +563,7 @@ async function route(request,env) {
   if(match) {
     const course=await env.DB.prepare('SELECT * FROM courses WHERE id=? AND published=1').bind(match[1]).first();
     if(!course) fail(404,'Course not found.');
-    if((!course.asset_key&&!course.youtube_id)||course.duration_seconds<=0) fail(409,'This listing is a reading topic, not a video course.');
+    if((!course.asset_key&&!course.youtube_id)||course.duration_seconds<=0||!(await modulePublished(env,course.id,'video'))) fail(409,'This course does not have a published video module.');
     await requireAccess(env,user,course.id);
     if(match[2]==='video'&&['GET','HEAD'].includes(method)) return video(request,env,course);
     if(['start','progress'].includes(match[2])&&method==='POST') return playback(request,env,user,course,match[2]);

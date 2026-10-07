@@ -9,3 +9,7 @@ The unique indexes intentionally fail if existing duplicate records need review.
 0011_password_reset.sql adds expiring, single-use password-reset token storage.
 0012_annual_library_access.sql gives existing library grants one year from grant.
 0013_multiple_course_activities.sql allows multiple Lumi activities per course.
+0014_unified_learning_items.sql adds course/article content metadata, module
+selection and publication flags, and Free/Course Pack access. It seeds module
+settings for the existing catalog and adds the four current article entries while
+preserving learner progress, quiz, activity, payment, and certificate records.

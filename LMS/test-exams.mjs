@@ -12,11 +12,12 @@ db.exec(readFileSync(new URL('migrations/0007_course_tests.sql',import.meta.url)
 db.exec(readFileSync(new URL('migrations/0008_admin_activities.sql',import.meta.url),'utf8'));
 db.exec(readFileSync(new URL('migrations/0009_video_sources.sql',import.meta.url),'utf8'));
 db.exec(readFileSync(new URL('migrations/0010_accounts_course_trash.sql',import.meta.url),'utf8'));
-for(const f of readdirSync(new URL('migrations/',import.meta.url)).filter(f=>f.endsWith('.sql')&&Number(f.slice(0,4))>10).sort())db.exec(readFileSync(new URL('migrations/'+f,import.meta.url),'utf8'));
 assert.ok(db.prepare("SELECT completed_at FROM enrollments WHERE course_id='course-4'").get().completed_at);
 assert.equal(db.prepare("SELECT completed_at FROM enrollments WHERE course_id='course-5'").get().completed_at,null);
 const questions=Array.from({length:10},(_,i)=>({prompt:`Fixture concept ${i+1}?`,options:[`Correct fixture ${i}`,`Wrong fixture ${i}`,`Another wrong fixture ${i}`],correct:0}));
 for(let i=4;i<=16;i++)db.prepare('INSERT INTO course_quizzes(course_id,version,questions_json,published) VALUES(?,1,?,1)').run('course-'+i,JSON.stringify(questions));
+for(const f of ['0011_password_reset.sql','0012_annual_library_access.sql','0013_multiple_course_activities.sql','0014_unified_learning_items.sql'])db.exec(readFileSync(new URL('migrations/'+f,import.meta.url),'utf8'));
+for(const f of readdirSync(new URL('migrations/',import.meta.url)).filter(f=>f.endsWith('.sql')&&Number(f.slice(0,4))>14).sort())db.exec(readFileSync(new URL('migrations/'+f,import.meta.url),'utf8'));
 function statement(sql,args=[]){return {bind(...values){return statement(sql,values);},async first(){return db.prepare(sql).get(...args)||null;},async all(){return {results:db.prepare(sql).all(...args)};},async run(){const r=db.prepare(sql).run(...args);return {meta:{changes:r.changes}};}};}
 const env={DB:{prepare:statement,async batch(items){db.exec('BEGIN');try{const results=[];for(const item of items)results.push(await item.run());db.exec('COMMIT');return results;}catch(e){db.exec('ROLLBACK');throw e;}}},ASSETS:{fetch(){return new Response('asset');}}};
 const hash=async v=>Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v))).toString('hex');

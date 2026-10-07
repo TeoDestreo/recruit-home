@@ -738,5 +738,24 @@ Open http://127.0.0.1:8787/LMS/ . Rebuild/reload after source edits.
 Signup requires a locally configured Turnstile test key pair in ignored .dev.vars;
 never deploy test keys. Backend tests mock Siteverify and do not need real secrets.
 
+20. Unified courses, guides, articles, and modules (October 6, 2026)
+   The administrator dashboard now uses one learning-item editor for video courses,
+   reading guides, and articles. Existing guide and article text is loaded into the
+   editor from the editorial library; edits are stored in D1. Published editorial
+   pages render from D1, and the public Articles index lists published article rows.
+   Add/select modules per item: Video, Written article, Lumi, and Test. Each selected
+   module has a separate Published checkbox. Each item has a Free or Course Pack
+   access dropdown. Course Pack means the existing $100 USD / 365-day library access;
+   free items bypass purchase gating. Lumi packages can be added to guides as well as
+   video lessons. Password reset uses “Forgot your password?” and sends a one-use
+   link to the account inbox (30-minute expiry).
+
+   Migration 0014 adds module/access/content metadata and seeds four editable article
+   entries while preserving the existing 28 catalog items and their learner records.
+   Apply the D1 migration, then build/deploy the Pages Worker:
+   npx.cmd wrangler d1 migrations apply advancedcpe-lms --config=./LMS/wrangler.toml --remote
+   node LMS/build.cjs
+   npx.cmd wrangler pages deploy --project-name=advancedcpe-home --branch=main --commit-dirty=true
+
 Rollback: use the prior successful production deployment in Cloudflare Pages.
 This restores site code, not D1 schema/data. Schema changes use numbered migrations.

@@ -7,3 +7,7 @@
 .activity-item{border:1px solid var(--line);border-radius:10px;padding:16px;margin:14px 0}.activity-item h3{margin:0 0 6px}.activity-item p{margin:6px 0 12px}.activity-item button{margin-right:10px}
 .verify-banner{display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap;border-left:5px solid var(--lime)}.verify-banner p{margin:0;flex:1 1 280px}
 .transcript summary{cursor:pointer;font-weight:700}.transcript #transcript-text{max-height:340px;overflow:auto;margin-top:12px;padding-right:8px}.transcript #transcript-text p{margin:0 0 10px;line-height:1.6}
+
+.auth-links{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 20px;margin-top:18px}.auth-links .text-button{padding:0}
+.text-button:hover,.text-button:focus-visible{background:transparent;text-decoration:underline;text-underline-offset:4px}
+#name-row legend{padding:0;margin-bottom:4px;font-size:18px;font-weight:750}

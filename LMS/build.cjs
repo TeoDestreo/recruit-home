@@ -6,7 +6,7 @@ const { join } = require('node:path');
 const target = join(__dirname, 'dist');
 mkdirSync(join(target,'LMS'), {recursive:true});
 const site=require('./site-pages.cjs');
-writeFileSync(join(target,'index.html'),readFileSync(join(__dirname,'../index.html'),'utf8').replace('<!-- ARTICLE_CARDS -->',site.articleCards()));
+writeFileSync(join(target,'index.html'),readFileSync(join(__dirname,'../index.html'),'utf8').replace('<!-- RECENT_ADDITIONS -->',site.recentAdditions()).replace('<!-- ARTICLE_CARDS -->',site.articleCards()));
 writeFileSync(join(target,'site.css'),readFileSync(join(__dirname,'site.css'),'utf8')+'\n'+readFileSync(join(__dirname,'site-polish.css'),'utf8'));
 const pagePaths=site.build(target);
 mkdirSync(join(target,'assets'),{recursive:true});

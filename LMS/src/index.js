@@ -338,18 +338,18 @@ async function playback(request,env,user,course,action) {
   return json({watched_seconds:watched,position_seconds:position,completed_at:enrollment.completed_at});
 }
 async function issueCertificate(env,user,courseId) {
-  const existing=await env.DB.prepare('SELECT id,learner_name,course_title,completed_at,issued_at FROM certificates WHERE user_id=? AND course_id=?').bind(user.id,courseId).first();
+  const existing=await env.DB.prepare('SELECT id,learner_name,course_title,completed_at,issued_at,cpe_credits FROM certificates WHERE user_id=? AND course_id=?').bind(user.id,courseId).first();
   if(existing)return existing;
   const passed=await env.DB.prepare('SELECT id FROM quiz_attempts WHERE user_id=? AND course_id=? AND passed=1 AND submitted_at IS NOT NULL').bind(user.id,courseId).first();
   if(!passed)fail(403,'Pass the course test with a score over 70% before requesting a certificate.');
   const enrollment=await env.DB.prepare('SELECT completed_at FROM enrollments WHERE user_id=? AND course_id=?').bind(user.id,courseId).first();
   if(!enrollment?.completed_at) fail(403,'Complete this course before requesting a certificate.');
-  await env.DB.prepare(`INSERT INTO certificates(id,user_id,course_id,learner_name,course_title,completed_at)
-    SELECT ?,e.user_id,e.course_id,u.name,c.title,e.completed_at FROM enrollments e
+  await env.DB.prepare(`INSERT INTO certificates(id,user_id,course_id,learner_name,course_title,completed_at,cpe_credits)
+    SELECT ?,e.user_id,e.course_id,u.name,c.title,e.completed_at,c.cpe_credits FROM enrollments e
     JOIN users u ON u.id=e.user_id JOIN courses c ON c.id=e.course_id
     WHERE e.user_id=? AND e.course_id=? AND e.completed_at IS NOT NULL
     ON CONFLICT(user_id,course_id) DO NOTHING`).bind(crypto.randomUUID(),user.id,courseId).run();
-  return env.DB.prepare('SELECT id,learner_name,course_title,completed_at,issued_at FROM certificates WHERE user_id=? AND course_id=?').bind(user.id,courseId).first();
+  return env.DB.prepare('SELECT id,learner_name,course_title,completed_at,issued_at,cpe_credits FROM certificates WHERE user_id=? AND course_id=?').bind(user.id,courseId).first();
 }
 async function quizStatus(env,user,course){
   const rows=await env.DB.prepare('SELECT attempt_number,score,passed FROM quiz_attempts WHERE user_id=? AND course_id=? AND submitted_at IS NOT NULL ORDER BY attempt_number').bind(user.id,course.id).all();
@@ -490,7 +490,7 @@ async function route(request,env) {
   if(path==='/api/me'&&method==='GET') return json({user:user?await publicUser(env,user):null});
   if(path==='/api/courses'&&method==='GET') {
     const uid=user?.id||'';
-    const {results}=await env.DB.prepare(`SELECT c.id,c.title,c.description,c.category,c.level,c.duration_seconds,c.course_code,c.topic_path,c.content_type,c.access_tier,c.slug,
+    const {results}=await env.DB.prepare(`SELECT c.id,c.title,c.description,c.category,c.level,c.duration_seconds,c.course_code,c.topic_path,c.cpe_credits,c.content_type,c.access_tier,c.slug,
       CASE WHEN (c.asset_key IS NOT NULL OR c.youtube_id IS NOT NULL) AND c.duration_seconds>0 AND EXISTS(SELECT 1 FROM learning_modules m WHERE m.course_id=c.id AND m.module_type='video' AND m.enabled=1 AND m.published=1) THEN 1 ELSE 0 END available,
       e.completed_at,COALESCE(p.position_seconds,0) position_seconds,COALESCE(p.watched_seconds,0) watched_seconds,
       CASE WHEN c.access_tier='free' THEN 1 ELSE EXISTS(SELECT 1 FROM course_access a WHERE a.user_id=? AND (a.course_id=c.id OR a.course_id IS NULL) AND a.revoked_at IS NULL AND (a.expires_at IS NULL OR a.expires_at>unixepoch())) END has_access,
@@ -542,14 +542,14 @@ async function route(request,env) {
   const certificateMatch=/^\/api\/certificates\/([a-f0-9-]{36})$/.exec(path);
   if(certificateMatch && method==='GET') {
     // Learners see their own certificates; administrators can open any learner's.
-    const certificate=await env.DB.prepare('SELECT id,learner_name,course_title,completed_at,issued_at FROM certificates WHERE id=? AND (user_id=? OR ?)').bind(certificateMatch[1],user.id,await isAdmin(env,user)?1:0).first();
+    const certificate=await env.DB.prepare('SELECT id,learner_name,course_title,completed_at,issued_at,cpe_credits FROM certificates WHERE id=? AND (user_id=? OR ?)').bind(certificateMatch[1],user.id,await isAdmin(env,user)?1:0).first();
     if(!certificate) fail(404,'Certificate not found.');
     return json({certificate});
   }
   const issueMatch=/^\/api\/courses\/([a-z0-9-]+)\/certificate$/.exec(path);
   if(issueMatch && method==='POST') {
     await body(request);
-    const existing=await env.DB.prepare('SELECT id,learner_name,course_title,completed_at,issued_at FROM certificates WHERE user_id=? AND course_id=?').bind(user.id,issueMatch[1]).first();
+    const existing=await env.DB.prepare('SELECT id,learner_name,course_title,completed_at,issued_at,cpe_credits FROM certificates WHERE user_id=? AND course_id=?').bind(user.id,issueMatch[1]).first();
     if(existing)return json({certificate:existing});
     await requireAccess(env,user,issueMatch[1]);return json({certificate:await issueCertificate(env,user,issueMatch[1])});
   }

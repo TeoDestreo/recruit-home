@@ -22,6 +22,6 @@ export async function accountRoute(request,env,user){
  profile.marketing_opt_in=!!saved?.marketing_opt_in;
  const grants=(await env.DB.prepare(`SELECT c.title,c.course_code,a.course_id,a.expires_at,a.revoked_at,CASE WHEN a.revoked_at IS NOT NULL THEN 'revoked' WHEN a.expires_at IS NOT NULL AND a.expires_at<=unixepoch() THEN 'expired' ELSE 'active' END status FROM course_access a LEFT JOIN courses c ON c.id=a.course_id WHERE a.user_id=? ORDER BY a.rowid DESC`).bind(user.id).all()).results;
  const learning=(await env.DB.prepare(`SELECT c.id,c.title,c.course_code,c.duration_seconds,c.published,c.deleted_at,COALESCE(p.watched_seconds,0) watched_seconds,e.completed_at FROM enrollments e JOIN courses c ON c.id=e.course_id LEFT JOIN course_progress p ON p.course_id=c.id AND p.user_id=e.user_id WHERE e.user_id=? ORDER BY c.category,c.course_code`).bind(user.id).all()).results;
- const certificates=(await env.DB.prepare('SELECT id,course_title,learner_name,issued_at FROM certificates WHERE user_id=? ORDER BY issued_at DESC').bind(user.id).all()).results;
+ const certificates=(await env.DB.prepare('SELECT id,course_title,learner_name,issued_at,cpe_credits FROM certificates WHERE user_id=? ORDER BY issued_at DESC').bind(user.id).all()).results;
  return json({user:{name:user.name,email:user.email},profile,access:{billing:'one_time',recurring:false,grants,libraryActive:grants.some(g=>g.status==='active'&&g.course_id===null)},learning,certificates});
 }

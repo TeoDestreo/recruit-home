@@ -1,5 +1,6 @@
 const $=id=>document.getElementById(id);
 const registrationPage=()=>/^\/LMS\/register(?:\.html)?\/?$/.test(location.pathname);
+const creditText=n=>{const v=Number(n??1);return `${Number.isInteger(v*10)?v.toFixed(1):v.toFixed(2)} CPE credit${v===1?'':'s'}`;};
 let user=null,courses=[],register=false,active=null,token=null,saving=false,watching=false,ready=false,adminCoursePreview=false;
 let resetToken=new URLSearchParams(location.hash.slice(1)).get('reset')||'';
 const verifyToken=new URLSearchParams(location.hash.slice(1)).get('verify')||'';
@@ -31,7 +32,7 @@ function draw(){
     if(!groups.has(c.category)){
       const section=text('section','','category-group');section.append(text('h2',c.category));const grid=text('div','','grid');section.append(grid);$('courses').append(section);groups.set(c.category,grid);
     }
-    const card=text('article','','card'),kind=c.available?'Video':c.content_type==='article'?'Article':c.content_type==='guide'?'Reading guide':'Learning item';card.append(text('span',`${c.course_code} · ${kind}`,'tag'),text('h3',c.title),text('p',c.description),text('small',c.available?`${Math.ceil(c.duration_seconds/60)} minutes · ${c.has_access?progressLabel(c):'Library access required'}`:c.access_tier==='free'?'Free learning resource': 'Course Pack access required',c.completed_at?'complete':''));
+    const card=text('article','','card'),kind=c.available?'Video':c.content_type==='article'?'Article':c.content_type==='guide'?'Reading guide':'Learning item';card.append(text('span',`${c.course_code} · ${kind}`,'tag'),text('h3',c.title),text('p',c.description),text('small',c.available?`${Math.ceil(c.duration_seconds/60)} minutes · ${creditText(c.cpe_credits)} · ${c.has_access?progressLabel(c):'Library access required'}`:c.access_tier==='free'?'Free learning resource': 'Course Pack access required',c.completed_at?'complete':''));
     if(user&&c.has_access&&c.available){const progress=document.createElement('progress');progress.max=100;progress.value=percent(c);progress.setAttribute('aria-label',`${c.title}: ${percent(c)}% watched`);card.append(progress);}
     if(!c.available&&c.topic_path&&c.article_published){const link=text('a',c.content_type==='article'?'Read article →':'Read topic →','topic-link');link.href=c.topic_path;card.append(link);}
     if(c.test_published||c.lumi_published){const testButton=text('button',c.test_published?'Open course modules':'Open Lumi activity');testButton.onclick=()=>user?openTestOnly(c,testButton):(show('auth'),authMode(false),message('Sign in or create an account to open this learning module.'));card.append(testButton);}

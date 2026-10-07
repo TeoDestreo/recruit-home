@@ -11,6 +11,7 @@ el('print').onclick=()=>window.print();
     el('learner').textContent=c.learner_name;el('course').textContent=c.course_title;
     el('completed').textContent=new Date(c.completed_at.replace(' ','T')+'Z').toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric',timeZone:'UTC'});
     el('certificate-id').textContent=c.id;
+    const credits=Number(c.cpe_credits??1);el('credits').textContent=Number.isInteger(credits*10)?credits.toFixed(1):credits.toFixed(2);
     document.title=`Certificate - ${c.course_title} - Advanced CPE`;
     el('message').hidden=true;el('certificate').hidden=false;el('print').hidden=false;
   }catch(e){el('message').textContent=e.message;}

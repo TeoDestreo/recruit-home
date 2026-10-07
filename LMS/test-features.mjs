@@ -146,6 +146,21 @@ cookie=adminCookie;assert.equal((await ok('/api/admin/learners/coupon-a')).certi
 assert.equal((await ok('/api/certificates/11111111-2222-4333-8444-555555555555')).certificate.learner_name,'coupon-a');
 await login('nosy');await status('/api/certificates/11111111-2222-4333-8444-555555555555',undefined,404);
 
+// ---------- CPE credits ----------
+cookie=adminCookie;let c4=(await ok('/api/admin/courses/course-4')).course;assert.equal(c4.cpe_credits,1);
+assert.equal((await ok('/api/courses')).courses.find(c=>c.id==='course-4').cpe_credits,1);
+const saveCourse=(credits,rev)=>req('/api/admin/courses/course-4',{title:c4.title,description:c4.description,category:c4.category,course_code:c4.course_code,level:c4.level,published:true,revision:rev,content_type:c4.content_type,access_tier:c4.access_tier,slug:c4.slug,cpe_credits:credits});
+for(const bad of [-1,101,1.234,'2',null])assert.equal((await saveCourse(bad,c4.admin_revision)).status,400,'credits '+bad);
+assert.equal((await saveCourse(1.5,c4.admin_revision)).status,200);c4=(await ok('/api/admin/courses/course-4')).course;assert.equal(c4.cpe_credits,1.5);
+// A new certificate records the course's credits; later changes don't alter it.
+db.prepare("INSERT INTO enrollments(user_id,course_id,completed_at) VALUES('coupon-a','course-5',CURRENT_TIMESTAMP)").run();
+db.prepare("INSERT INTO quiz_attempts(id,user_id,course_id,attempt_number,quiz_version,questions_json,submitted_at,score,passed) VALUES('qa-c5','coupon-a','course-5',1,1,'[]',unixepoch(),90,1)").run();
+db.prepare("UPDATE courses SET cpe_credits=2.5 WHERE id='course-5'").run();
+cookie=(await login('coupon-a'));const issued=(await ok('/api/courses/course-5/certificate',{})).certificate;assert.equal(issued.cpe_credits,2.5);
+db.prepare("UPDATE courses SET cpe_credits=1 WHERE id='course-5'").run();
+assert.equal((await ok('/api/certificates/'+issued.id)).certificate.cpe_credits,2.5);
+assert.equal((await ok('/api/account')).certificates.find(c=>c.id===issued.id).cpe_credits,2.5);
+
 // ---------- Article editor starting text ----------
 // A guide with no saved article opens in the editor as formatted HTML, so saving keeps headings and lists.
 cookie=adminCookie;const guide=(await ok('/api/admin/courses/course-23')).modules.find(m=>m.module_type==='article');

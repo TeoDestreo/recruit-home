@@ -16,9 +16,11 @@ Added in the test environment (October 6, 2026), not yet in production:
   FREE_ACCESS_CODE_HASH code still works alongside them.
 - Captions and transcripts: upload .vtt/.srt captions and/or a .txt transcript per video
   course in the course editor. Stored in D1 (course_captions), not R2.
+- CPE credits: each learning item has a CPE credits value (default 1) set in the course
+  editor. Certificates record the value when issued and print it.
 - Receipts: My account lists PayPal purchases with a printable receipt page, and a
   receipt email is sent once when a payment is confirmed (if email is configured).
-Migrations 0015-0017 must be applied to the production database before deploying these.
+Migrations 0015-0018 must be applied to the production database before deploying these.
 Production also has 0014_unified_learning_items.sql (a learning_modules table), applied on
 October 6 from code that is not on GitHub yet; this copy of the code does not include it.
 Tests: node LMS/test-features.mjs (plus the existing test-*.mjs files).

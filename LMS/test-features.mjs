@@ -12,7 +12,7 @@ const env={COURSE_STORAGE:new MemoryBucket(),DB:{prepare:statement,async batch(i
 const hash=async v=>Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v))).toString('hex');
 const emails=[];let emailFails=false,paypalOrder=null;
 globalThis.fetch=async(url,options={})=>{
- if(url==='https://challenges.cloudflare.com/turnstile/v0/siteverify')return Response.json({success:true,hostname:'lms.test',action:'signup'});
+ if(url==='https://challenges.cloudflare.com/turnstile/v0/siteverify'){const token=JSON.parse(options.body).response;return Response.json({success:token!=='bad',hostname:'lms.test',action:token.startsWith('reset')?'password_reset':'signup'});}
  if(url==='https://api.cloudflare.com/client/v4/accounts/acct/email/sending/send'){assert.equal(options.headers.Authorization,'Bearer test-email-token');if(emailFails)return Response.json({success:false},{status:500});emails.push(JSON.parse(options.body));return Response.json({success:true});}
  const u=new URL(url);assert.equal(u.hostname,'api-m.sandbox.paypal.com');
  if(u.pathname==='/v1/oauth2/token')return Response.json({access_token:'pp-token'});
@@ -63,7 +63,13 @@ cookie=reg2.headers.get('Set-Cookie').split(';')[0];await status('/api/auth/veri
 // Without email configured, registration still works and resend explains why it can't send.
 const savedToken=env.CF_EMAIL_API_TOKEN;delete env.CF_EMAIL_API_TOKEN;await status('/api/auth/verify-email/resend',{},503);env.CF_EMAIL_API_TOKEN=savedToken;
 // A completed password reset proves inbox ownership.
-cookie='';await ok('/api/auth/password-reset/request',{email:'second@example.com'});
+cookie='';
+// Forgot password needs its own security check: none, a sign-up token or a failed check is refused, and no email goes out.
+const mailsBeforeReset=emails.length;
+for(const [token,code] of [[undefined,400],['ok',400],['bad',400]])await status('/api/auth/password-reset/request',{email:'second@example.com',turnstileToken:token},code);
+assert.equal(emails.length,mailsBeforeReset);
+const savedSecret=env.TURNSTILE_SECRET;delete env.TURNSTILE_SECRET;await status('/api/auth/password-reset/request',{email:'second@example.com',turnstileToken:'reset-ok'},503);env.TURNSTILE_SECRET=savedSecret;
+await ok('/api/auth/password-reset/request',{email:'second@example.com',turnstileToken:'reset-ok'});assert.equal(emails.length,mailsBeforeReset+1);
 await ok('/api/auth/password-reset/complete',{token:linkToken(emails.at(-1),'reset'),password:'another password'});
 assert.ok(db.prepare("SELECT email_verified_at FROM users WHERE email='second@example.com'").get().email_verified_at);
 // Existing accounts are verified by the migration; admins can verify a learner manually.

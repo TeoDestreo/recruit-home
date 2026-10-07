@@ -11,3 +11,4 @@
 .auth-links{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 20px;margin-top:18px}.auth-links .text-button{padding:0}
 .text-button:hover,.text-button:focus-visible{background:transparent;text-decoration:underline;text-underline-offset:4px}
 #name-row legend{padding:0;margin-bottom:4px;font-size:18px;font-weight:750}
+#reset-check{margin-top:20px;min-height:65px}#reset-check-status{font-size:13px}

@@ -71,7 +71,7 @@ async function auth(request,env,path) {
   await limit(env,'email:'+await digest(email),10,600);
   let user;
   if(path.endsWith('/register')) {
-    await verifySignup(request,env,input.turnstileToken);
+    await verifyChallenge(request,env,input.turnstileToken,'signup','Account registration is temporarily unavailable.');
     const fields={};
     for(const [key,max] of Object.entries({firstName:50,lastName:50,organization:150,jobTitle:100,city:100,region:100,country:100,designation:100,licenseNumber:80,licenseRegion:100,phone:40})) {
       if(input[key]!==undefined&&typeof input[key]!=='string')fail(400,'Invalid registration details.');
@@ -107,6 +107,7 @@ async function requestPasswordReset(request,env) {
   if(!emailReady(env))return json({error:'Password reset email is not configured yet.'},503);
   const input=await body(request),email=String(input.email||'').trim().toLowerCase();
   await limit(env,'reset:ip:'+await digest(request.headers.get('CF-Connecting-IP')||'local'),20,3600);
+  await verifyChallenge(request,env,input.turnstileToken,'password_reset','Password reset is temporarily unavailable.');
   if(email.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return json({message:RESET_REQUEST_MESSAGE});
   try { await limit(env,'reset:email:'+await digest(email),3,3600); }
   catch(error) { if(error.status===429)return json({message:RESET_REQUEST_MESSAGE}); throw error; }
@@ -187,8 +188,9 @@ export function mergeRanges(ranges,start,end) {
   for(const range of sorted) { const last=merged.at(-1); if(last&&range[0]<=last[1]+0.25) last[1]=Math.max(last[1],range[1]); else merged.push([...range]); }
   return merged;
 }
-async function verifySignup(request,env,token) {
-  if(!env.TURNSTILE_SECRET) fail(503,'Account registration is temporarily unavailable.');
+// Cloudflare Turnstile. Each form renders its widget with its own action, so a token from one form can't be used on another.
+async function verifyChallenge(request,env,token,action,unavailable) {
+  if(!env.TURNSTILE_SECRET) fail(503,unavailable);
   if(typeof token!=='string'||!token||token.length>2048) fail(400,'Please complete the security check.');
   let verified;
   try {
@@ -199,7 +201,7 @@ async function verifySignup(request,env,token) {
     if(!response.ok) throw Error();
     verified=await response.json();
   }catch { fail(503,'The security check is temporarily unavailable. Please try again.'); }
-  if(!verified.success||verified.hostname!==new URL(request.url).hostname||verified.action!=='signup') fail(400,'The security check failed or expired. Please try again.');
+  if(!verified.success||verified.hostname!==new URL(request.url).hostname||verified.action!==action) fail(400,'The security check failed or expired. Please try again.');
 }
 async function requireAccess(env,user,courseId) {
   if(await isAdmin(env,user))return;
